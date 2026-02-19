@@ -1,0 +1,980 @@
+/* ============================================================
+   Design Tokens
+   ============================================================ */
+:root {
+  /* Rating colors */
+  --color-good:      #4CAF50;
+  --color-good-bg:   rgba(76, 175, 80, 0.15);
+  --color-bad:       #F44336;
+  --color-bad-bg:    rgba(244, 67, 54, 0.15);
+  --color-neutral:   #9E9E9E;
+  --color-neutral-bg: rgba(158, 158, 158, 0.15);
+
+  /* Surface / text */
+  --color-bg:        #1a1a2e;
+  --color-surface:   #16213e;
+  --color-surface-2: #0f3460;
+  --color-text:      #e0e0e0;
+  --color-text-dim:  #9e9e9e;
+  --color-accent:    #e94560;
+  --color-border:    rgba(255, 255, 255, 0.12);
+
+  /* Spacing */
+  --space-xs:  4px;
+  --space-sm:  8px;
+  --space-md:  16px;
+  --space-lg:  24px;
+  --space-xl:  32px;
+
+  /* Z-indexes */
+  --z-toolbar: 1000;
+  --z-modal:   2000;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-pill: 9999px;
+
+  /* Transitions */
+  --transition: 0.15s ease;
+}
+
+/* ============================================================
+   Reset / Base
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   Map
+   ============================================================ */
+#map {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+/* Override Leaflet's default light popup styles for dark theme */
+.leaflet-popup-content-wrapper {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.leaflet-popup-tip {
+  background: var(--color-surface);
+}
+
+.leaflet-popup-content {
+  margin: var(--space-md);
+  min-width: 140px;
+}
+
+.popup-rating {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--space-xs);
+}
+
+.popup-rating.good    { color: var(--color-good); }
+.popup-rating.bad     { color: var(--color-bad); }
+.popup-rating.neutral { color: var(--color-neutral); }
+
+.popup-note {
+  font-size: 0.875rem;
+  color: var(--color-text-dim);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ============================================================
+   Auth Bar — top-right corner
+   ============================================================ */
+#auth-bar {
+  position: fixed;
+  top: calc(var(--space-md) + env(safe-area-inset-top));
+  right: var(--space-md);
+  z-index: var(--z-toolbar);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+#btn-signin {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  min-height: 44px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background var(--transition), box-shadow var(--transition);
+  white-space: nowrap;
+}
+
+#btn-signin:hover {
+  background: var(--color-surface-2);
+}
+
+/* Nudge animation when map is clicked while signed out */
+@keyframes nudge {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-6px); }
+  40%       { transform: translateX(6px); }
+  60%       { transform: translateX(-4px); }
+  80%       { transform: translateX(4px); }
+}
+
+#btn-signin.nudge {
+  animation: nudge 0.4s ease;
+  box-shadow: 0 0 0 3px var(--color-accent);
+}
+
+#user-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: var(--space-xs) var(--space-sm) var(--space-xs) var(--space-xs);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+#user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+#user-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#btn-signout {
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-pill);
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+
+#btn-signout:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text);
+}
+
+/* ============================================================
+   Toolbar — Mobile (bottom center pill)
+   ============================================================ */
+#toolbar {
+  position: fixed;
+  bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toolbar);
+
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-sm);
+
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: var(--space-sm);
+
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ============================================================
+   Toolbar — Desktop (left center column)
+   ============================================================ */
+@media (min-width: 768px) {
+  #toolbar {
+    bottom: auto;
+    left: var(--space-md);
+    top: 50%;
+    transform: translateY(-50%);
+
+    flex-direction: column;
+    border-radius: var(--radius-lg);
+  }
+}
+
+/* ============================================================
+   Tool Buttons
+   ============================================================ */
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+
+  width: 56px;
+  height: 56px;
+  min-width: 44px;  /* WCAG touch target */
+  min-height: 44px;
+
+  background: transparent;
+  color: var(--color-text);
+  border: 2px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tool-btn:hover:not(.disabled) {
+  background: var(--color-surface-2);
+}
+
+.tool-btn.active {
+  background: rgba(233, 69, 96, 0.2);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.3);
+}
+
+.tool-btn.disabled,
+.tool-btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: auto; /* keep for tooltip trigger */
+}
+
+/* ============================================================
+   "Coming Soon" Tooltip — CSS ::after on disabled buttons
+   ============================================================ */
+.tool-btn.disabled::after {
+  content: "Coming soon";
+  position: absolute;
+
+  /* Mobile: show above button */
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+
+  opacity: 0;
+  transition: opacity var(--transition);
+  z-index: calc(var(--z-toolbar) + 1);
+}
+
+/* Desktop: show tooltip to the right */
+@media (min-width: 768px) {
+  .tool-btn.disabled::after {
+    bottom: auto;
+    top: 50%;
+    left: calc(100% + 10px);
+    transform: translateY(-50%);
+  }
+}
+
+/* Show on hover (desktop) */
+@media (hover: hover) {
+  .tool-btn.disabled:hover::after {
+    opacity: 1;
+  }
+}
+
+/* Show on touch via JS class */
+.tool-btn.show-tooltip::after {
+  opacity: 1;
+}
+
+/* ============================================================
+   Modal Overlay
+   ============================================================ */
+#modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+
+  display: flex;
+  align-items: flex-end;   /* bottom sheet on mobile */
+  justify-content: center;
+
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+
+  padding: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (min-width: 768px) {
+  #modal-overlay {
+    align-items: center;    /* centered dialog on desktop */
+    padding: var(--space-md);
+    padding-bottom: var(--space-md);
+  }
+}
+
+/* ============================================================
+   Modal Card
+   ============================================================ */
+#modal-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  width: 100%;
+  max-width: 480px;
+
+  /* Bottom sheet corners on mobile */
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: var(--space-lg);
+  padding-bottom: calc(var(--space-lg) + env(safe-area-inset-bottom));
+
+  box-shadow: 0 -4px 32px rgba(0, 0, 0, 0.6);
+
+  animation: slide-up 0.22s ease;
+}
+
+@media (min-width: 768px) {
+  #modal-card {
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+    animation: fade-in 0.18s ease;
+  }
+}
+
+@keyframes slide-up {
+  from { transform: translateY(40px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+#modal-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: var(--space-md);
+  color: var(--color-text);
+}
+
+/* ============================================================
+   Rating Buttons
+   ============================================================ */
+.rating-group {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.rating-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+
+  padding: var(--space-sm) var(--space-xs);
+  min-height: 44px;
+
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  border: 2px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.rating-btn .rating-icon {
+  font-size: 1rem;
+}
+
+.rating-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.rating-btn[data-rating="good"].selected {
+  border-color: var(--color-good);
+  background: var(--color-good-bg);
+  color: var(--color-good);
+}
+
+.rating-btn[data-rating="neutral"].selected {
+  border-color: var(--color-neutral);
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral);
+}
+
+.rating-btn[data-rating="bad"].selected {
+  border-color: var(--color-bad);
+  background: var(--color-bad-bg);
+  color: var(--color-bad);
+}
+
+/* ============================================================
+   Note Textarea
+   ============================================================ */
+.note-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-dim);
+  margin-bottom: var(--space-xs);
+}
+
+.note-label .optional {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#note-input {
+  width: 100%;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--transition);
+  font-family: inherit;
+}
+
+#note-input:focus {
+  border-color: var(--color-accent);
+}
+
+#note-input::placeholder {
+  color: var(--color-text-dim);
+  opacity: 0.6;
+}
+
+/* ============================================================
+   Modal Action Buttons
+   ============================================================ */
+.modal-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.btn-secondary,
+.btn-primary {
+  flex: 1;
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  transition: opacity var(--transition), background var(--transition);
+}
+
+.btn-secondary {
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   Location Controls — bottom-right corner
+   ============================================================ */
+#location-controls {
+  position: fixed;
+  bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+  right: var(--space-md);
+  z-index: var(--z-toolbar);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* On mobile, sit above the toolbar pill */
+@media (max-width: 767px) {
+  #location-controls {
+    bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+}
+
+.location-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.location-btn:hover {
+  background: var(--color-surface-2);
+}
+
+.location-btn.active {
+  background: rgba(41, 121, 255, 0.2);
+  border-color: #2979FF;
+  color: #2979FF;
+}
+
+/* ============================================================
+   GPS Location Dot + Pulse
+   ============================================================ */
+.location-dot-wrapper {
+  position: relative;
+  width: 16px;
+  height: 16px;
+}
+
+.location-dot {
+  width: 14px;
+  height: 14px;
+  background: #2979FF;
+  border: 2.5px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.6);
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 1;
+}
+
+.location-pulse {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: rgba(41, 121, 255, 0.35);
+  animation: gps-pulse 2s ease-out infinite;
+  z-index: 0;
+}
+
+@keyframes gps-pulse {
+  0%   { transform: scale(1);   opacity: 0.8; }
+  100% { transform: scale(2.8); opacity: 0;   }
+}
+
+/* ============================================================
+   Drawing HUD — beside toolbar (above on mobile, right on desktop)
+   ============================================================ */
+#drawing-hud {
+  position: fixed;
+  /* Mobile: above the bottom toolbar pill */
+  bottom: calc(var(--space-md) + env(safe-area-inset-bottom) + 80px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toolbar);
+
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: var(--space-sm);
+
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+@media (min-width: 768px) {
+  #drawing-hud {
+    /* Desktop: to the right of the left-side toolbar column */
+    bottom: auto;
+    left: calc(var(--space-md) + 72px + var(--space-sm));
+    top: 50%;
+    transform: translateY(-50%);
+    border-radius: var(--radius-lg);
+  }
+}
+
+/* Content sections — row on mobile, column on desktop */
+#paint-hud-content,
+#polygon-hud-content {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+@media (min-width: 768px) {
+  #paint-hud-content,
+  #polygon-hud-content {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-xs);
+    min-width: 72px;
+  }
+}
+
+/* Separator between color dots and action buttons */
+.hud-sep {
+  width: 1px;
+  height: 28px;
+  background: var(--color-border);
+  flex-shrink: 0;
+  margin: 0 var(--space-xs);
+}
+
+@media (min-width: 768px) {
+  .hud-sep {
+    width: 100%;
+    height: 1px;
+    margin: var(--space-xs) 0;
+  }
+}
+
+/* Paint color selector dots */
+.hud-rating-btn {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.hud-rating-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.hud-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+}
+
+.hud-rating-btn[data-paint-rating="good"]    .hud-dot { background: var(--color-good); }
+.hud-rating-btn[data-paint-rating="neutral"] .hud-dot { background: var(--color-neutral); }
+.hud-rating-btn[data-paint-rating="bad"]     .hud-dot { background: var(--color-bad); }
+
+.hud-rating-btn[data-paint-rating="good"].active    { border-color: var(--color-good);    background: var(--color-good-bg); }
+.hud-rating-btn[data-paint-rating="neutral"].active { border-color: var(--color-neutral); background: var(--color-neutral-bg); }
+.hud-rating-btn[data-paint-rating="bad"].active     { border-color: var(--color-bad);     background: var(--color-bad-bg); }
+
+/* HUD action buttons (Undo, Clear, Finish, Cancel) */
+.hud-action-btn {
+  height: 36px;
+  padding: 0 var(--space-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition);
+}
+
+.hud-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text);
+}
+
+.hud-action-danger {
+  color: var(--color-bad);
+}
+
+.hud-action-danger:hover {
+  background: var(--color-bad-bg);
+  color: var(--color-bad);
+  border-color: var(--color-bad);
+}
+
+.hud-action-primary {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: rgba(233, 69, 96, 0.1);
+}
+
+.hud-action-primary:hover {
+  background: rgba(233, 69, 96, 0.2);
+}
+
+/* Polygon status hint */
+.hud-hint {
+  font-size: 0.7rem;
+  color: var(--color-text-dim);
+  text-align: center;
+  padding: var(--space-xs) var(--space-sm);
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+@media (min-width: 768px) {
+  .hud-hint {
+    white-space: normal;
+    max-width: 80px;
+    text-align: left;
+  }
+}
+
+/* ============================================================
+   Layers Button — top-left corner (matches .location-btn style)
+   ============================================================ */
+#btn-layers {
+  position: fixed;
+  top: calc(var(--space-md) + env(safe-area-inset-top));
+  left: var(--space-md);
+  z-index: var(--z-toolbar);
+
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+#btn-layers:hover {
+  background: var(--color-surface-2);
+}
+
+#btn-layers.active {
+  background: rgba(41, 121, 255, 0.2);
+  border-color: #2979FF;
+  color: #2979FF;
+}
+
+/* ============================================================
+   Layers Panel — slides down below the button
+   ============================================================ */
+#layers-panel {
+  position: fixed;
+  top: calc(var(--space-md) + env(safe-area-inset-top) + 52px);
+  left: var(--space-md);
+  z-index: var(--z-toolbar);
+
+  min-width: 200px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm);
+
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+
+  animation: panel-slide-down 0.18s ease;
+}
+
+@keyframes panel-slide-down {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.layers-section-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-dim);
+  padding: var(--space-xs) var(--space-xs);
+  margin-bottom: 4px;
+}
+
+/* ── Base layer pills ── */
+.base-layer-btns {
+  display: flex;
+  gap: 4px;
+  margin-bottom: var(--space-xs);
+}
+
+.base-layer-btn {
+  flex: 1;
+  height: 32px;
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.base-layer-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--color-text);
+}
+
+.base-layer-btn.active {
+  background: rgba(41, 121, 255, 0.2);
+  border-color: #2979FF;
+  color: #2979FF;
+}
+
+/* ── Divider between sections ── */
+.layers-sep {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-sm) 0;
+}
+
+/* ── Overlay toggle buttons ── */
+.overlay-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-sm);
+  background: transparent;
+  color: var(--color-text-dim);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.overlay-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text);
+}
+
+.overlay-btn.active {
+  background: rgba(41, 121, 255, 0.15);
+  border-color: rgba(41, 121, 255, 0.4);
+  color: #2979FF;
+}
+
+/* ── Map marker icon wrappers ── */
+.nexrad-icon,
+.military-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Zoom-gate notice shown at low zoom for power overlays ── */
+.zoom-notice {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-dim);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+/* ============================================================
+   Utility
+   ============================================================ */
+.hidden {
+  display: none !important;
+}
