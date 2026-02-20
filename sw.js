@@ -7,7 +7,7 @@
  *   - Firebase/CDN requests: network-only (never cache auth tokens)
  */
 
-const APP_VERSION  = 'v3';
+const APP_VERSION  = 'v4';
 const APP_CACHE    = `relo-app-${APP_VERSION}`;
 const TILE_CACHE   = `relo-tiles-${APP_VERSION}`;
 const TILE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in ms
@@ -55,7 +55,8 @@ self.addEventListener('fetch', (e) => {
   if (url.hostname.includes('googleapis.com'))  return;
   if (url.hostname.includes('firebaseapp.com')) return;
   if (url.hostname.includes('unpkg.com'))       return;
-  if (url.hostname.includes('overpass-api.de')) return;  // never cache API responses
+  if (url.hostname.includes('overpass-api.de'))          return;  // never cache API responses
+  if (url.hostname.includes('nominatim.openstreetmap.org')) return;  // never cache geocode responses
 
   // OSM Street + Terrain tiles — cache-first, max 7 days
   if (url.hostname.endsWith('.tile.openstreetmap.org') ||
