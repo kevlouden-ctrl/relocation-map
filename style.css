@@ -1200,6 +1200,44 @@ html, body {
   pointer-events: none;
 }
 
+/* ── Toast notifications ── */
+#toast-container {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--space-lg) + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  pointer-events: none;
+  width: min(90vw, 360px);
+}
+
+.toast {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  text-align: center;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--transition), transform var(--transition);
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast.toast-error {
+  border-color: rgba(233, 69, 96, 0.5);
+}
+
 /* ============================================================
    Toolbar Separator
    ============================================================ */

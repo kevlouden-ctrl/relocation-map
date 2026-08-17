@@ -408,7 +408,12 @@ function loadOverlay(key) {
   }
 }
 
-async function fetchOverpassData(query, timeoutMs = 20000) {
+// Overpass's public instance rate-limits per IP with a 429 that omits CORS
+// headers — the browser reports that as a generic "Failed to fetch"/CORS
+// error, indistinguishable from other network failures at the fetch() call
+// site. One retry after a short backoff rides out brief throttling; anything
+// past that surfaces to the caller so the UI can tell the user what happened.
+async function fetchOverpassData(query, timeoutMs = 20000, _retried = false) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -418,8 +423,22 @@ async function fetchOverpassData(query, timeoutMs = 20000) {
       body:    `data=${encodeURIComponent(query)}`,
       signal:  controller.signal,
     });
-    if (!resp.ok) throw new Error(`Overpass error: ${resp.status}`);
-    return resp.json();
+    if (resp.status === 429 && !_retried) {
+      clearTimeout(timer);
+      await new Promise((r) => setTimeout(r, 3000));
+      return fetchOverpassData(query, timeoutMs, true);
+    }
+    if (!resp.ok) {
+      const err = new Error(`Overpass error: ${resp.status}`);
+      err.rateLimited = resp.status === 429;
+      throw err;
+    }
+    return await resp.json();
+  } catch (err) {
+    // A bare "Failed to fetch" TypeError on this host is almost always the
+    // 429-without-CORS-header case above, just masked by the browser.
+    if (err instanceof TypeError) err.rateLimited = true;
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -428,6 +447,51 @@ async function fetchOverpassData(query, timeoutMs = 20000) {
 function setOverlayLoading(key, isLoading) {
   const btn = document.querySelector(`.overlay-btn[data-overlay="${key}"]`);
   if (btn) btn.classList.toggle('loading', isLoading);
+}
+
+function showToast(message, { variant = 'error', duration = 4500 } = {}) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast${variant === 'error' ? ' toast-error' : ''}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 200);
+  }, duration);
+}
+
+function overlayFailToast(label, err) {
+  const reason = err?.rateLimited
+    ? 'the map data server is busy right now'
+    : 'a network error';
+  showToast(`${label} unavailable — ${reason}. Try again in a moment.`);
+}
+
+// ── Overlay data cache (sessionStorage) — survives page reloads within the
+// same tab so re-toggling or refreshing doesn't always re-hit Overpass. ──
+const OVERLAY_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours — infra data rarely changes
+
+function saveOverlayCache(key, bounds, elements) {
+  try {
+    sessionStorage.setItem(`relo-overlay-${key}`, JSON.stringify({
+      bounds: [[bounds.getSouth(), bounds.getWest()], [bounds.getNorth(), bounds.getEast()]],
+      elements,
+      savedAt: Date.now(),
+    }));
+  } catch { /* storage full/unavailable — skip, will just re-fetch */ }
+}
+
+function loadOverlayCache(key) {
+  try {
+    const raw = sessionStorage.getItem(`relo-overlay-${key}`);
+    if (!raw) return null;
+    const { bounds, elements, savedAt } = JSON.parse(raw);
+    if (Date.now() - savedAt > OVERLAY_CACHE_TTL) return null;
+    return { bounds: L.latLngBounds(bounds), elements };
+  } catch { return null; }
 }
 
 async function loadPowerLines() {
@@ -454,6 +518,15 @@ async function loadPowerLines() {
     return;
   }
 
+  // Fast path — a same-tab reload left a still-fresh, still-covering cache
+  const cached = loadOverlayCache('powerLines');
+  if (cached && cached.bounds.contains(map.getBounds())) {
+    powerLineEntries = buildLineEntries(cached.elements);
+    powerLineCache   = { bounds: cached.bounds };
+    applyLineVoltageFilter();
+    return;
+  }
+
   overlayLoaded.powerLines = true;
   setOverlayLoading('powerLines', true);
 
@@ -472,28 +545,35 @@ async function loadPowerLines() {
       `[out:json][timeout:25];way["power"="line"](${bbox});out geom qt;`,
       32000
     );
-    powerLineEntries = [];
-    data.elements.forEach((el) => {
-      if (!el.geometry?.length) return;
-      const coords   = el.geometry.map((p) => [p.lat, p.lon]);
-      const kv       = parseVoltage(el.tags?.voltage);
-      const tier     = voltageToTier(kv);
-      const meta     = VOLTAGE_TIER_META[tier];
-      const voltStr  = kv != null ? `<br>Voltage: ${Math.round(kv)} kV` : (el.tags?.voltage ? `<br>Voltage: ${el.tags.voltage}` : '');
-      const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`          : '';
-      const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}` : '';
-      const layer = L.polyline(coords, { color: meta.color, weight: meta.weight, opacity: 0.9 })
-        .bindPopup(`<b>Power Line</b>${voltStr}${name}${operator}`, { maxWidth: 220 });
-      powerLineEntries.push({ tier, layer });
-    });
+    powerLineEntries = buildLineEntries(data.elements);
     powerLineCache = { bounds: pb };  // mark fetched area
+    saveOverlayCache('powerLines', pb, data.elements);
     applyLineVoltageFilter();
   } catch (err) {
     console.error('Power lines fetch failed:', err);
     overlayLoaded.powerLines = false;
+    overlayFailToast('Power lines', err);
   } finally {
     setOverlayLoading('powerLines', false);
   }
+}
+
+function buildLineEntries(elements) {
+  const entries = [];
+  elements.forEach((el) => {
+    if (!el.geometry?.length) return;
+    const coords   = el.geometry.map((p) => [p.lat, p.lon]);
+    const kv       = parseVoltage(el.tags?.voltage);
+    const tier     = voltageToTier(kv);
+    const meta     = VOLTAGE_TIER_META[tier];
+    const voltStr  = kv != null ? `<br>Voltage: ${Math.round(kv)} kV` : (el.tags?.voltage ? `<br>Voltage: ${el.tags.voltage}` : '');
+    const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`          : '';
+    const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}` : '';
+    const layer = L.polyline(coords, { color: meta.color, weight: meta.weight, opacity: 0.9 })
+      .bindPopup(`<b>Power Line</b>${voltStr}${name}${operator}`, { maxWidth: 220 });
+    entries.push({ tier, layer });
+  });
+  return entries;
 }
 
 function applyLineVoltageFilter() {
@@ -525,6 +605,15 @@ async function loadSubstations() {
     return;
   }
 
+  // Fast path — a same-tab reload left a still-fresh, still-covering cache
+  const cached = loadOverlayCache('substations');
+  if (cached && cached.bounds.contains(map.getBounds())) {
+    substationEntries = buildSubstationEntries(cached.elements);
+    substationCache   = { bounds: cached.bounds };
+    applySubVoltageFilter();
+    return;
+  }
+
   overlayLoaded.substations = true;
   setOverlayLoading('substations', true);
 
@@ -543,30 +632,37 @@ async function loadSubstations() {
       `[out:json][timeout:25];(node["power"="substation"](${bbox});way["power"="substation"](${bbox}););out center qt;`,
       32000
     );
-    substationEntries = [];
-    data.elements.forEach((el) => {
-      const lat = el.lat ?? el.center?.lat;
-      const lon = el.lon ?? el.center?.lon;
-      if (lat == null || lon == null) return;
-      const kv       = parseVoltage(el.tags?.voltage);
-      const tier     = voltageToTier(kv);
-      const meta     = VOLTAGE_TIER_META[tier];
-      const voltStr  = kv != null ? `<br>Voltage: ${Math.round(kv)} kV` : (el.tags?.voltage ? `<br>Voltage: ${el.tags.voltage}` : '');
-      const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`          : '';
-      const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}` : '';
-      const layer = L.circleMarker([lat, lon], {
-        radius: 9, color: '#fff', fillColor: meta.color, fillOpacity: 1.0, weight: 2,
-      }).bindPopup(`<b>Substation</b>${voltStr}${name}${operator}`, { maxWidth: 220 });
-      substationEntries.push({ tier, layer });
-    });
+    substationEntries = buildSubstationEntries(data.elements);
     substationCache = { bounds: pb };  // mark fetched area
+    saveOverlayCache('substations', pb, data.elements);
     applySubVoltageFilter();
   } catch (err) {
     console.error('Substations fetch failed:', err);
     overlayLoaded.substations = false;
+    overlayFailToast('Substations', err);
   } finally {
     setOverlayLoading('substations', false);
   }
+}
+
+function buildSubstationEntries(elements) {
+  const entries = [];
+  elements.forEach((el) => {
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (lat == null || lon == null) return;
+    const kv       = parseVoltage(el.tags?.voltage);
+    const tier     = voltageToTier(kv);
+    const meta     = VOLTAGE_TIER_META[tier];
+    const voltStr  = kv != null ? `<br>Voltage: ${Math.round(kv)} kV` : (el.tags?.voltage ? `<br>Voltage: ${el.tags.voltage}` : '');
+    const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`          : '';
+    const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}` : '';
+    const layer = L.circleMarker([lat, lon], {
+      radius: 9, color: '#fff', fillColor: meta.color, fillOpacity: 1.0, weight: 2,
+    }).bindPopup(`<b>Substation</b>${voltStr}${name}${operator}`, { maxWidth: 220 });
+    entries.push({ tier, layer });
+  });
+  return entries;
 }
 
 function applySubVoltageFilter() {
@@ -595,8 +691,16 @@ async function loadDataCenters() {
 
   // Fast path — viewport fully covered by previously fetched area
   if (dataCenterCache && dataCenterCache.bounds.contains(map.getBounds())) {
-    overlayGroups.dataCenters.clearLayers();
-    dataCenterEntries.forEach(({ layer }) => layer.addTo(overlayGroups.dataCenters));
+    applyDataCenterEntries();
+    return;
+  }
+
+  // Fast path — a same-tab reload left a still-fresh, still-covering cache
+  const cached = loadOverlayCache('dataCenters');
+  if (cached && cached.bounds.contains(map.getBounds())) {
+    dataCenterEntries = buildDataCenterEntries(cached.elements);
+    dataCenterCache   = { bounds: cached.bounds };
+    applyDataCenterEntries();
     return;
   }
 
@@ -626,35 +730,44 @@ async function loadDataCenters() {
       35000
     );
 
-    dataCenterEntries = [];
-    overlayGroups.dataCenters.clearLayers();
-
-    data.elements.forEach((el) => {
-      const lat = el.lat ?? el.center?.lat;
-      const lon = el.lon ?? el.center?.lon;
-      if (lat == null || lon == null) return;
-
-      const tags     = el.tags ?? {};
-      const name     = tags.name     ? escapeHtml(tags.name)     : 'Data Center';
-      const operator = tags.operator ? `<br>Op: ${escapeHtml(tags.operator)}` : '';
-      const floors   = tags['building:levels'] ? `<br>Floors: ${tags['building:levels']}` : '';
-
-      const layer = L.circleMarker([lat, lon], {
-        radius: 9, color: '#fff', fillColor: '#E65100', fillOpacity: 0.92, weight: 2,
-      }).bindPopup(`<b>⚡ ${name}</b><br><small>Data Center</small>${operator}${floors}`, { maxWidth: 220 });
-
-      layer.addTo(overlayGroups.dataCenters);
-      dataCenterEntries.push({ layer });
-    });
-
+    dataCenterEntries = buildDataCenterEntries(data.elements);
+    applyDataCenterEntries();
     dataCenterCache = { bounds: pb };
+    saveOverlayCache('dataCenters', pb, data.elements);
     console.log(`Data centers loaded: ${dataCenterEntries.length}`);
   } catch (err) {
     console.error('Data centers fetch failed:', err);
     overlayLoaded.dataCenters = false;
+    overlayFailToast('Data centers', err);
   } finally {
     setOverlayLoading('dataCenters', false);
   }
+}
+
+function buildDataCenterEntries(elements) {
+  const entries = [];
+  elements.forEach((el) => {
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (lat == null || lon == null) return;
+
+    const tags     = el.tags ?? {};
+    const name     = tags.name     ? escapeHtml(tags.name)     : 'Data Center';
+    const operator = tags.operator ? `<br>Op: ${escapeHtml(tags.operator)}` : '';
+    const floors   = tags['building:levels'] ? `<br>Floors: ${tags['building:levels']}` : '';
+
+    const layer = L.circleMarker([lat, lon], {
+      radius: 9, color: '#fff', fillColor: '#E65100', fillOpacity: 0.92, weight: 2,
+    }).bindPopup(`<b>⚡ ${name}</b><br><small>Data Center</small>${operator}${floors}`, { maxWidth: 220 });
+
+    entries.push({ layer });
+  });
+  return entries;
+}
+
+function applyDataCenterEntries() {
+  overlayGroups.dataCenters.clearLayers();
+  dataCenterEntries.forEach(({ layer }) => layer.addTo(overlayGroups.dataCenters));
 }
 
 // Fuel type → center dot color
@@ -848,6 +961,16 @@ async function loadPlaces() {
     return;
   }
 
+  // Fast path — a same-tab reload left a still-fresh, still-covering cache
+  const cached = loadOverlayCache('places');
+  if (cached && cached.bounds.contains(map.getBounds())) {
+    placesEntries = buildPlaceEntries(cached.elements);
+    placesCache   = { bounds: cached.bounds };
+    PLACE_KEYS.forEach(k => { overlayLoaded[k] = true; });
+    populatePlaceGroups();
+    return;
+  }
+
   // Show loading state on every active places button
   PLACE_KEYS.filter(k => activeOverlays.has(k)).forEach(k => setOverlayLoading(k, true));
 
@@ -875,30 +998,36 @@ async function loadPlaces() {
       35000
     );
 
-    placesEntries = [];
-    data.elements.forEach((el) => {
-      const lat   = el.lat ?? el.center?.lat;
-      const lon   = el.lon ?? el.center?.lon;
-      if (lat == null || lon == null) return;
-
-      const types = classifyPlaceElement(el);
-      types.forEach((type) => {
-        const layer = L.marker([lat, lon], { icon: poiDivIcon(type) })
-          .bindPopup(buildPoiPopup(el, type), { maxWidth: 240 });
-        placesEntries.push({ type, layer });
-      });
-    });
-
+    placesEntries = buildPlaceEntries(data.elements);
     placesCache = { bounds: pb };
+    saveOverlayCache('places', pb, data.elements);
     PLACE_KEYS.forEach(k => { overlayLoaded[k] = true; });
     populatePlaceGroups();
     console.log(`Places loaded: ${placesEntries.length} markers`);
   } catch (err) {
     console.error('Places fetch failed:', err);
     PLACE_KEYS.forEach(k => { overlayLoaded[k] = false; });
+    overlayFailToast('Places', err);
   } finally {
     PLACE_KEYS.forEach(k => setOverlayLoading(k, false));
   }
+}
+
+function buildPlaceEntries(elements) {
+  const entries = [];
+  elements.forEach((el) => {
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (lat == null || lon == null) return;
+
+    const types = classifyPlaceElement(el);
+    types.forEach((type) => {
+      const layer = L.marker([lat, lon], { icon: poiDivIcon(type) })
+        .bindPopup(buildPoiPopup(el, type), { maxWidth: 240 });
+      entries.push({ type, layer });
+    });
+  });
+  return entries;
 }
 
 async function loadPowerPlants() {
@@ -936,6 +1065,7 @@ async function loadPowerPlants() {
     } catch (err) {
       console.error('Power plants fetch failed:', err);
       overlayLoaded.powerPlants = false;  // allow retry on next toggle
+      overlayFailToast('Power plants', err);
       setOverlayLoading('powerPlants', false);
       return;
     }
