@@ -49,17 +49,90 @@
       <span>Power Plants</span>
     </button>
 
+    <div id="plant-type-filters" class="hidden">
+      <div class="plant-type-grid">
+        <button class="plant-type-btn active" data-plant-type="nuclear"><span class="plant-dot" style="background:#F44336"></span>Nuclear</button>
+        <button class="plant-type-btn active" data-plant-type="coal"><span class="plant-dot" style="background:#795548"></span>Coal</button>
+        <button class="plant-type-btn active" data-plant-type="gas"><span class="plant-dot" style="background:#FF7043"></span>Gas</button>
+        <button class="plant-type-btn active" data-plant-type="oil"><span class="plant-dot" style="background:#E64A19"></span>Oil</button>
+        <button class="plant-type-btn active" data-plant-type="wind"><span class="plant-dot" style="background:#26C6DA"></span>Wind</button>
+        <button class="plant-type-btn active" data-plant-type="solar"><span class="plant-dot" style="background:#FFC107"></span>Solar</button>
+        <button class="plant-type-btn active" data-plant-type="hydro"><span class="plant-dot" style="background:#42A5F5"></span>Hydro</button>
+        <button class="plant-type-btn active" data-plant-type="biomass"><span class="plant-dot" style="background:#66BB6A"></span>Biomass</button>
+        <button class="plant-type-btn active" data-plant-type="geothermal"><span class="plant-dot" style="background:#FF5722"></span>Geo</button>
+        <button class="plant-type-btn active" data-plant-type="waste"><span class="plant-dot" style="background:#90A4AE"></span>Waste</button>
+        <button class="plant-type-btn active" data-plant-type="other"><span class="plant-dot" style="background:#607D8B"></span>Other</button>
+      </div>
+    </div>
+
     <button class="overlay-btn" data-overlay="powerLines" aria-pressed="false">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
       <span>Power Lines</span>
     </button>
+
+    <div id="line-voltage-filters" class="hidden">
+      <div class="plant-type-grid">
+        <button class="plant-type-btn active" data-line-voltage="v500"><span class="plant-dot" style="background:#F44336"></span>500kV+</button>
+        <button class="plant-type-btn active" data-line-voltage="v345"><span class="plant-dot" style="background:#FF5722"></span>345kV</button>
+        <button class="plant-type-btn active" data-line-voltage="v230"><span class="plant-dot" style="background:#FF9800"></span>230kV</button>
+        <button class="plant-type-btn active" data-line-voltage="v115"><span class="plant-dot" style="background:#FFC107"></span>115kV</button>
+        <button class="plant-type-btn active" data-line-voltage="v69"><span class="plant-dot" style="background:#8BC34A"></span>69kV</button>
+        <button class="plant-type-btn active" data-line-voltage="vlow"><span class="plant-dot" style="background:#78909C"></span>&lt;69kV</button>
+        <button class="plant-type-btn active" data-line-voltage="vunk"><span class="plant-dot" style="background:#546E7A"></span>Unknown</button>
+      </div>
+    </div>
 
     <button class="overlay-btn" data-overlay="substations" aria-pressed="false">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
       <span>Substations</span>
     </button>
 
+    <div id="sub-voltage-filters" class="hidden">
+      <div class="plant-type-grid">
+        <button class="plant-type-btn active" data-sub-voltage="v500"><span class="plant-dot" style="background:#F44336"></span>500kV+</button>
+        <button class="plant-type-btn active" data-sub-voltage="v345"><span class="plant-dot" style="background:#FF5722"></span>345kV</button>
+        <button class="plant-type-btn active" data-sub-voltage="v230"><span class="plant-dot" style="background:#FF9800"></span>230kV</button>
+        <button class="plant-type-btn active" data-sub-voltage="v115"><span class="plant-dot" style="background:#FFC107"></span>115kV</button>
+        <button class="plant-type-btn active" data-sub-voltage="v69"><span class="plant-dot" style="background:#8BC34A"></span>69kV</button>
+        <button class="plant-type-btn active" data-sub-voltage="vlow"><span class="plant-dot" style="background:#78909C"></span>&lt;69kV</button>
+        <button class="plant-type-btn active" data-sub-voltage="vunk"><span class="plant-dot" style="background:#546E7A"></span>Unknown</button>
+      </div>
+    </div>
 
+    <button class="overlay-btn" data-overlay="dataCenters" aria-pressed="false">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M4 1h16c1.1 0 2 .9 2 2v4c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V3c0-1.1.9-2 2-2zm0 2v4h16V3H4zm14 2.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-4 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM4 9h16c1.1 0 2 .9 2 2v4c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2v-4c0-1.1.9-2 2-2zm0 2v4h16v-4H4zm14 2.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-4 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM4 17h16c1.1 0 2 .9 2 2v2c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2v-2c0-1.1.9-2 2-2zm0 2v2h16v-2H4zm14 1a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-4 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/></svg>
+      <span>Data Centers</span>
+    </button>
+
+    <div class="layers-sep"></div>
+
+    <div class="layers-section-label">Places</div>
+
+    <button class="overlay-btn" data-overlay="wholeFoods" aria-pressed="false">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M19 6H17C17 3.24 14.76 1 12 1S7 3.24 7 6H5C3.9 6 3 6.9 3 8V20C3 21.1 3.9 22 5 22H19C20.1 22 21 21.1 21 20V8C21 6.9 20.1 6 19 6ZM12 3C13.65 3 15 4.35 15 6H9C9 4.35 10.35 3 12 3ZM19 20H5V8H19V20Z"/></svg>
+      <span>Whole Foods</span>
+    </button>
+
+    <button class="overlay-btn" data-overlay="groceries" aria-pressed="false">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96C5 16.1 6.9 18 9 18h12v-2H9.42c-.14 0-.25-.11-.25-.25l.03-.12.9-1.63H19c.75 0 1.41-.41 1.75-1.03l3.58-6.49A1 1 0 0 0 23.45 5H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/></svg>
+      <span>Grocery Stores</span>
+    </button>
+
+    <button class="overlay-btn" data-overlay="cinemas" aria-pressed="false">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18 3v2h-2V3H8v2H6V3H4v18h2v-2h2v2h8v-2h2v2h2V3h-2zM8 17H6v-2h2v2zm0-4H6v-2h2v2zm0-4H6V7h2v2zm10 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V7h2v2z"/></svg>
+      <span>Movie Theaters</span>
+    </button>
+
+  </div>
+
+  <!-- Search bar — top-center -->
+  <div id="search-bar">
+    <div id="search-input-wrap">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      <input id="search-input" type="text" placeholder="Search city, address, or place…" autocomplete="off" spellcheck="false" />
+      <button id="search-clear" class="hidden" aria-label="Clear search">&#x2715;</button>
+    </div>
+    <ul id="search-results" class="hidden" role="listbox" aria-label="Search results"></ul>
   </div>
 
   <!-- Auth bar — top-right corner -->
@@ -146,6 +219,14 @@
       <div class="hud-sep" aria-hidden="true"></div>
       <button id="btn-undo-stroke" class="hud-action-btn" aria-label="Undo last stroke">Undo</button>
       <button id="btn-clear-strokes" class="hud-action-btn hud-action-danger" aria-label="Clear all strokes">Clear</button>
+      <div class="hud-sep" aria-hidden="true"></div>
+      <div class="hud-width-wrap" aria-label="Stroke width">
+        <input type="range" id="paint-width" min="3" max="28" step="1" value="10"
+               class="hud-width-slider" aria-label="Stroke width">
+        <div class="hud-width-preview-box">
+          <div id="paint-width-preview" class="hud-width-preview"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Polygon controls -->
@@ -166,6 +247,15 @@
           <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
         </svg>
       </button>
+    </div>
+    <div id="notes-filter-bar">
+      <div id="notes-filter-wrap">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true" id="notes-filter-icon">
+          <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+        </svg>
+        <input id="notes-filter" type="search" placeholder="Filter notes…" autocomplete="off" aria-label="Filter notes">
+        <button id="notes-filter-clear" class="hidden" aria-label="Clear filter">✕</button>
+      </div>
     </div>
     <div id="notes-list"></div>
   </div>

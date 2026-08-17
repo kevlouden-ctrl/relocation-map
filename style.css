@@ -97,6 +97,14 @@ html, body {
 .popup-rating.bad     { color: var(--color-bad); }
 .popup-rating.neutral { color: var(--color-neutral); }
 
+.popup-by {
+  font-size: 0.68rem;
+  color: var(--color-text-dim);
+  opacity: 0.7;
+  margin-bottom: 4px;
+  font-style: italic;
+}
+
 .popup-note {
   font-size: 0.875rem;
   color: var(--color-text-dim);
@@ -105,9 +113,167 @@ html, body {
   word-break: break-word;
 }
 
+.popup-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+}
+
+.popup-action-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06);
+  color: var(--color-text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.popup-action-btn:hover { background: rgba(255,255,255,0.12); }
+
+.popup-delete-btn {
+  color: #F44336;
+  border-color: rgba(244,67,54,0.3);
+}
+.popup-delete-btn:hover { background: rgba(244,67,54,0.12); }
+
 /* ============================================================
    Auth Bar — top-right corner
    ============================================================ */
+/* ── Search bar ── */
+#search-bar {
+  position: fixed;
+  top: calc(var(--space-md) + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toolbar);
+  width: min(420px, calc(100vw - 200px));
+}
+
+#search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0 var(--space-sm);
+  height: 44px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--color-text-dim);
+}
+
+#search-input-wrap:focus-within {
+  border-color: rgba(41,121,255,0.6);
+  color: var(--color-text);
+}
+
+#search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font-size: 0.875rem;
+  min-width: 0;
+}
+
+#search-input::placeholder { color: var(--color-text-dim); }
+
+#search-clear {
+  background: transparent;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 4px;
+  line-height: 1;
+}
+#search-clear:hover { color: var(--color-text); }
+
+#search-results {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: var(--space-xs);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+#search-results li {
+  padding: 8px var(--space-sm);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--color-text-dim);
+  line-height: 1.3;
+}
+
+#search-results li:hover,
+#search-results li.focused {
+  background: rgba(255,255,255,0.07);
+  color: var(--color-text);
+}
+
+#search-results li .result-name {
+  font-weight: 600;
+  color: var(--color-text);
+  display: block;
+}
+
+#search-results li .result-detail {
+  font-size: 0.72rem;
+  color: var(--color-text-dim);
+}
+
+.search-pin,
+.saved-pin {
+  filter: drop-shadow(0 2px 5px rgba(0,0,0,0.55));
+}
+
+/* ── POI place markers (Gluten-Free, Whole Foods, Grocery, Cinema) ── */
+.poi-marker {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8.5px;
+  font-weight: 800;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  letter-spacing: -0.3px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  white-space: nowrap;
+}
+
+#search-results .search-empty {
+  padding: var(--space-sm);
+  color: var(--color-text-dim);
+  font-size: 0.8rem;
+  text-align: center;
+  cursor: default;
+}
+
+/* ── Auth bar ── */
 #auth-bar {
   position: fixed;
   top: calc(var(--space-md) + env(safe-area-inset-top));
@@ -234,7 +400,8 @@ html, body {
 @media (min-width: 768px) {
   #toolbar {
     bottom: auto;
-    left: var(--space-md);
+    left: auto;
+    right: var(--space-md);
     top: 50%;
     transform: translateY(-50%);
 
@@ -665,9 +832,10 @@ html, body {
 
 @media (min-width: 768px) {
   #drawing-hud {
-    /* Desktop: to the right of the left-side toolbar column */
+    /* Desktop: to the left of the right-side toolbar column */
     bottom: auto;
-    left: calc(var(--space-md) + 72px + var(--space-sm));
+    left: auto;
+    right: calc(var(--space-md) + 72px + var(--space-sm));
     top: 50%;
     transform: translateY(-50%);
     border-radius: var(--radius-lg);
@@ -879,12 +1047,13 @@ html, body {
 /* ── Base layer pills ── */
 .base-layer-btns {
   display: flex;
+  flex-direction: column;
   gap: 4px;
   margin-bottom: var(--space-xs);
 }
 
 .base-layer-btn {
-  flex: 1;
+  width: 100%;
   height: 32px;
   background: var(--color-surface-2);
   color: var(--color-text-dim);
@@ -965,6 +1134,57 @@ html, body {
   to { transform: rotate(360deg); }
 }
 
+/* ── Plant type filter grid (shown under Power Plants when active) ── */
+#plant-type-filters {
+  padding: 4px var(--space-xs) var(--space-xs);
+}
+
+.plant-type-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+}
+
+.plant-type-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.70rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  opacity: 0.4;
+  transition: background var(--transition), border-color var(--transition),
+              color var(--transition), opacity var(--transition);
+}
+
+.plant-type-btn:hover {
+  opacity: 0.7;
+  color: var(--color-text);
+}
+
+.plant-type-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--color-text);
+  opacity: 1;
+}
+
+.plant-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
 
 /* ── Zoom-gate notice shown at low zoom for power overlays ── */
 .zoom-notice {
@@ -1076,6 +1296,69 @@ html, body {
 #btn-notes-close:hover {
   background: var(--color-surface-2);
   color: var(--color-text);
+}
+
+/* ── Notes filter bar ── */
+#notes-filter-bar {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+#notes-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: 34px;
+  padding: 0 var(--space-sm);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  transition: border-color var(--transition);
+}
+
+#notes-filter-wrap:focus-within {
+  border-color: rgba(41,121,255,0.5);
+}
+
+#notes-filter-icon {
+  flex-shrink: 0;
+  color: var(--color-text-dim);
+}
+
+#notes-filter {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font-size: 0.8rem;
+  min-width: 0;
+}
+
+#notes-filter::placeholder { color: var(--color-text-dim); }
+
+/* hide the browser's default ✕ on type=search */
+#notes-filter::-webkit-search-cancel-button { display: none; }
+
+#notes-filter-clear {
+  background: transparent;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 2px 4px;
+  line-height: 1;
+  border-radius: 50%;
+  transition: color var(--transition);
+}
+#notes-filter-clear:hover { color: var(--color-text); }
+
+.notes-filter-count {
+  padding: var(--space-xs) var(--space-md);
+  font-size: 0.7rem;
+  color: var(--color-text-dim);
+  border-bottom: 1px solid var(--color-border);
 }
 
 /* ── Notes list ── */
@@ -1190,6 +1473,13 @@ html, body {
   overflow: hidden;
 }
 
+.review-by {
+  font-size: 0.68rem;
+  color: var(--color-text-dim);
+  opacity: 0.6;
+  font-style: italic;
+}
+
 .review-date {
   font-size: 0.7rem;
   color: var(--color-text-dim);
@@ -1204,6 +1494,91 @@ html, body {
   color: var(--color-text-dim);
   font-size: 0.875rem;
   line-height: 1.5;
+}
+
+/* ============================================================
+   Stroke Width Slider — inside Paint HUD
+   ============================================================ */
+.hud-width-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-xs);
+  flex-shrink: 0;
+}
+
+@media (min-width: 768px) {
+  .hud-width-wrap {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: var(--space-xs) 0;
+  }
+}
+
+.hud-width-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 76px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border);
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+@media (min-width: 768px) {
+  .hud-width-slider {
+    width: 100%;
+  }
+}
+
+.hud-width-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text);
+  cursor: pointer;
+  border: 2px solid var(--color-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.hud-width-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text);
+  cursor: pointer;
+  border: 2px solid var(--color-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  border: none;
+}
+
+.hud-width-preview-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+@media (min-width: 768px) {
+  .hud-width-preview-box {
+    width: 100%;
+    height: 24px;
+    justify-content: center;
+  }
+}
+
+.hud-width-preview {
+  border-radius: 9999px;
+  transition: width 0.1s ease, height 0.1s ease, background 0.15s ease;
+  min-width: 3px;
+  min-height: 3px;
 }
 
 /* ============================================================

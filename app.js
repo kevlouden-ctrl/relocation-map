@@ -3,24 +3,11 @@
  * Sprint 3: Finger Paint + Polygon drawing tools
  *
  * Firestore collections:
- *   pins     — pin drop markers
- *   drawings — all drawn overlays (single collection), differentiated by `type`:
- *               stroke: { userId, type:'stroke', rating, points:[{lat,lng,r}], createdAt }
- *               area:   { userId, type:'area', rating, note, vertices:[{lat,lng}], createdAt }
+ *   pins     — pin drop markers { userId, lat, lng, rating, note, createdBy, createdAt }
+ *   drawings — strokes + areas  { userId, type, rating, ..., createdBy, createdAt }
  *
- * Update Firestore security rules to cover the new collections (see Firebase console → Rules):
- *
- *   rules_version = '2';
- *   service cloud.firestore {
- *     match /databases/{database}/documents {
- *       match /{col}/{id} {
- *         allow read, delete: if request.auth != null
- *                             && request.auth.uid == resource.data.userId;
- *         allow create: if request.auth != null
- *                       && request.auth.uid == request.resource.data.userId;
- *       }
- *     }
- *   }
+ * Family sharing: add family member UIDs to FAMILY_UIDS below AND to firestore.rules.
+ * Security rules live in firestore.rules — deploy with ./deploy.sh.
  *
  * ⚠️  Serve over HTTP, not file://: python3 -m http.server 8080
  */
@@ -72,6 +59,39 @@ let db   = null;
 // ============================================================
 const PIN_COLORS = { good: '#4CAF50', bad: '#F44336', neutral: '#9E9E9E' };
 
+// ── Family sharing ────────────────────────────────────────────────────────────
+// Add every family member's Firebase UID here so they share pins & drawings.
+// Find UIDs: Firebase Console → Build → Authentication → Users → copy UID
+//   1. Have each person sign in at https://relocation-map-30570.web.app
+//   2. Open Firebase console → Authentication → Users
+//   3. Copy each UID and paste it below
+//   4. Run ./deploy.sh to push the update
+const FAMILY_UIDS = [
+  'IiNjEBzA2LQyMUUeMs7vxvRrp992',  // Kevin
+  'rFg6XxmOVPTidhXCMLuV9n8P0GG3',  // Noi
+  // 'REPLACE_WITH_SON_UID',
+];
+
+// Display name fallback for docs saved before createdBy was added.
+// Keep in sync with FAMILY_UIDS above.
+const FAMILY_NAMES = {
+  'IiNjEBzA2LQyMUUeMs7vxvRrp992': 'Kevin',
+  'rFg6XxmOVPTidhXCMLuV9n8P0GG3': 'Noi',
+  // 'REPLACE_WITH_SON_UID': 'Son',
+};
+
+/** Returns a deduplicated UID list always including the current user. */
+function familyUidList(currentUid) {
+  return [...new Set([currentUid, ...FAMILY_UIDS])];
+}
+
+/** Extracts a short first name (or email prefix) for attribution display. */
+function shortName(nameOrEmail) {
+  if (!nameOrEmail) return 'Unknown';
+  if (nameOrEmail.includes('@')) return nameOrEmail.split('@')[0];
+  return nameOrEmail.split(' ')[0];
+}
+
 const BASE_TILE_LAYERS = {
   street: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -95,10 +115,17 @@ const BASE_TILE_LAYERS = {
 };
 
 const PAINT_FILL = { good: '#4CAF50', bad: '#F44336', neutral: '#9E9E9E' };
-const PAINT_STROKE_OPACITY = 0.35;
-const PAINT_RADIUS_PX      = 16;   // visual radius → converted to meters at paint time
-const PAINT_MIN_DIST_PX    = 8;    // min px between consecutive paint dots
-const PAINT_MAX_POINTS     = 500;  // per-stroke cap (Firestore doc size guard)
+
+// — Places / POI overlay metadata —
+const POI_META = {
+  wholeFoods: { label: 'WF', color: '#00695C', layerLabel: 'Whole Foods'   },
+  groceries:  { label: 'GR', color: '#FF8F00', layerLabel: 'Grocery'       },
+  cinemas:    { label: 'MV', color: '#7B1FA2', layerLabel: 'Movie Theater' },
+};
+const PAINT_STROKE_OPACITY      = 0.55;  // polyline opacity
+const PAINT_STROKE_WEIGHT_DEFAULT = 10;  // default / fallback for old saved strokes
+const PAINT_MIN_DIST_PX         = 6;     // min px between consecutive points
+const PAINT_MAX_POINTS          = 500;   // per-stroke cap (Firestore doc size guard)
 
 // ============================================================
 // 5. State
@@ -119,13 +146,14 @@ let watchId        = null;
 let followMe       = false;
 
 // — Paint —
-let paintRating        = 'neutral';
-let isPainting         = false;
-let activeStroke       = [];  // { lat, lng, r } — current drag points
-let activeStrokeLayers = [];  // L.circle — layers for the current drag
-let allStrokes         = [];  // { layers, points, rating, docId } — all strokes (for undo/clear)
-let lastPaintPx        = null;
-let lastPaintTime      = 0;
+let paintRating       = 'neutral';
+let paintStrokeWeight = PAINT_STROKE_WEIGHT_DEFAULT;
+let isPainting        = false;
+let activeStroke      = [];    // { lat, lng } — current drag points
+let activePolyline    = null;  // L.polyline — live stroke being painted
+let allStrokes        = [];    // { layers:[polyline], points, rating, weight, docId }
+let lastPaintPx       = null;
+let lastPaintTime     = 0;
 
 // — Polygon —
 let polygonVertices      = [];
@@ -135,6 +163,7 @@ let polygonRubberBand    = null;
 
 // — Notes panel —
 let reviewItems  = [];   // sorted by createdAt desc; populated by loaders + saves
+let notesFilter  = '';   // live filter string for the notes panel
 const geocodeCache = {}; // { "lat,lng": "City, State" } — Nominatim cache
 
 // — Layers —
@@ -145,10 +174,43 @@ const overlayGroups = {
   powerLines:   L.layerGroup(),
   substations:  L.layerGroup(),
   powerPlants:  L.layerGroup(),
+  dataCenters:  L.layerGroup(),
+  wholeFoods:   L.layerGroup(),
+  groceries:    L.layerGroup(),
+  cinemas:      L.layerGroup(),
 };
-const overlayLoaded  = { powerLines: false, substations: false, powerPlants: false };
+const overlayLoaded  = {
+  powerLines: false, substations: false, powerPlants: false,
+  dataCenters: false,
+  wholeFoods:  false, groceries:   false, cinemas: false,
+};
 const activeOverlays = new Set();
 let   powerFetchTimer = null;
+
+// — Overlay bbox caches (in-memory; cleared when entries are invalidated) —
+let powerLineCache    = null;  // { bounds: L.latLngBounds } — area already fetched
+let substationCache   = null;  // { bounds: L.latLngBounds }
+let dataCenterCache   = null;  // { bounds: L.latLngBounds }
+let dataCenterEntries = [];    // { layer }[]
+
+// — Places (POI) combined cache — one fetch covers all 4 place types —
+let placesCache   = null;   // { bounds: L.latLngBounds }
+let placesEntries = [];     // { type, layer }[]
+
+// sessionStorage key for the one-time CONUS plant fetch
+const PLANT_SESSION_KEY = 'relo-plants-v1';
+
+// — Power plant type filters —
+let powerPlantEntries  = [];  // { source, circleLayer, markerLayer }
+const activePlantTypes = new Set([
+  'nuclear','coal','gas','oil','wind','solar','hydro','biomass','geothermal','waste','other',
+]);
+
+// — Power line & substation voltage filters —
+let powerLineEntries   = [];  // { tier, layer }
+let substationEntries  = [];  // { tier, layer }
+const activeLineVoltages = new Set(['v500','v345','v230','v115','v69','vlow','vunk']);
+const activeSubVoltages  = new Set(['v500','v345','v230','v115','v69','vlow','vunk']);
 
 // ============================================================
 // 5.5 Review helpers
@@ -196,6 +258,37 @@ function initMap() {
 
   map.on('dragstart', () => {
     if (followMe) disableFollowMe();
+  });
+
+  // Global popup handler — wires edit/delete buttons on any saved pin or area popup
+  map.on('popupopen', (e) => {
+    const container = e.popup.getElement();
+    if (!container) return;
+
+    const editBtn = container.querySelector('.popup-edit-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => {
+        const docId = editBtn.dataset.docId;
+        const idx   = reviewItems.findIndex(r => r.id === docId);
+        if (idx < 0) return;
+        e.popup.close();
+        openModal({ type: 'edit-note', item: reviewItems[idx], idx });
+      });
+    }
+
+    const deleteBtn = container.querySelector('.popup-delete-btn');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', () => {
+        const docId = deleteBtn.dataset.docId;
+        const idx   = reviewItems.findIndex(r => r.id === docId);
+        if (idx < 0) return;
+        const label = reviewItems[idx].type === 'pin' ? 'pin' : 'area';
+        if (confirm(`Delete this ${label}? This cannot be undone.`)) {
+          e.popup.close();
+          deleteItem(idx);
+        }
+      });
+    }
   });
 }
 
@@ -249,6 +342,21 @@ function initLayers() {
     btn.addEventListener('click', () => toggleOverlay(btn.dataset.overlay));
   });
 
+  // Plant type filter buttons
+  document.querySelectorAll('.plant-type-btn[data-plant-type]').forEach((btn) => {
+    btn.addEventListener('click', () => togglePlantType(btn.dataset.plantType));
+  });
+
+  // Power line voltage filter buttons
+  document.querySelectorAll('.plant-type-btn[data-line-voltage]').forEach((btn) => {
+    btn.addEventListener('click', () => toggleLineVoltage(btn.dataset.lineVoltage));
+  });
+
+  // Substation voltage filter buttons
+  document.querySelectorAll('.plant-type-btn[data-sub-voltage]').forEach((btn) => {
+    btn.addEventListener('click', () => toggleSubVoltage(btn.dataset.subVoltage));
+  });
+
   // Re-fetch viewport-based overlays on map pan/zoom
   map.on('moveend', onLayerMoveEnd);
 }
@@ -272,15 +380,19 @@ function toggleOverlay(key) {
     map.removeLayer(overlayGroups[key]);
     btn.classList.remove('active');
     btn.setAttribute('aria-pressed', 'false');
-    // Viewport-based overlays re-fetch fresh data on next toggle-ON.
-    // powerPlants is a one-time US-wide load — keep cached across toggles.
-    if (key !== 'powerPlants') overlayLoaded[key] = false;
+    if (key === 'powerPlants')  document.getElementById('plant-type-filters').classList.add('hidden');
+    if (key === 'powerLines')   document.getElementById('line-voltage-filters').classList.add('hidden');
+    if (key === 'substations')  document.getElementById('sub-voltage-filters').classList.add('hidden');
+    // NOTE: we intentionally keep overlayLoaded + cached entries so re-enable is instant
   } else {
     activeOverlays.add(key);
     overlayGroups[key].addTo(map);
     btn.classList.add('active');
     btn.setAttribute('aria-pressed', 'true');
-    if (!overlayLoaded[key]) loadOverlay(key);
+    if (key === 'powerPlants')  document.getElementById('plant-type-filters').classList.remove('hidden');
+    if (key === 'powerLines')   document.getElementById('line-voltage-filters').classList.remove('hidden');
+    if (key === 'substations')  document.getElementById('sub-voltage-filters').classList.remove('hidden');
+    loadOverlay(key);  // cache-aware — instant if data already covers viewport
   }
 }
 
@@ -289,6 +401,10 @@ function loadOverlay(key) {
     case 'powerLines':  return loadPowerLines();
     case 'substations': return loadSubstations();
     case 'powerPlants': return loadPowerPlants();
+    case 'dataCenters': return loadDataCenters();
+    case 'wholeFoods':
+    case 'groceries':
+    case 'cinemas':     return loadPlaces();
   }
 }
 
@@ -316,6 +432,8 @@ function setOverlayLoading(key, isLoading) {
 
 async function loadPowerLines() {
   if (map.getZoom() < 7) {
+    powerLineEntries = [];
+    powerLineCache   = null;  // invalidate cache when below zoom gate
     overlayGroups.powerLines.clearLayers();
     const center = map.getCenter();
     L.marker(center, {
@@ -330,67 +448,212 @@ async function loadPowerLines() {
     return;
   }
 
+  // Fast path — viewport fully covered by previously fetched area
+  if (powerLineCache && powerLineCache.bounds.contains(map.getBounds())) {
+    applyLineVoltageFilter();
+    return;
+  }
+
   overlayLoaded.powerLines = true;
   setOverlayLoading('powerLines', true);
-  const b    = map.getBounds();
-  const bbox = `${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`;
+
+  // Fetch with 25% padding so small pans don't immediately miss the cache
+  const b      = map.getBounds();
+  const latPad = (b.getNorth() - b.getSouth()) * 0.25;
+  const lngPad = (b.getEast()  - b.getWest())  * 0.25;
+  const pb     = L.latLngBounds(
+    [b.getSouth() - latPad, b.getWest() - lngPad],
+    [b.getNorth() + latPad, b.getEast() + lngPad],
+  );
+  const bbox = `${pb.getSouth()},${pb.getWest()},${pb.getNorth()},${pb.getEast()}`;
+
   try {
     const data = await fetchOverpassData(
       `[out:json][timeout:25];way["power"="line"](${bbox});out geom qt;`,
-      32000   // client timeout > server timeout so server error reaches us cleanly
+      32000
     );
-    // Swap in new data only after a successful fetch — old lines stay visible while loading
-    overlayGroups.powerLines.clearLayers();
+    powerLineEntries = [];
     data.elements.forEach((el) => {
       if (!el.geometry?.length) return;
       const coords   = el.geometry.map((p) => [p.lat, p.lon]);
-      const voltage  = el.tags?.voltage  ? `<br>Voltage: ${el.tags.voltage} V`          : '';
-      const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`             : '';
-      const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}`    : '';
-      L.polyline(coords, { color: '#FF8C00', weight: 4, opacity: 1.0 })
-        .bindPopup(`<b>Power Line</b>${voltage}${name}${operator}`, { maxWidth: 220 })
-        .addTo(overlayGroups.powerLines);
+      const kv       = parseVoltage(el.tags?.voltage);
+      const tier     = voltageToTier(kv);
+      const meta     = VOLTAGE_TIER_META[tier];
+      const voltStr  = kv != null ? `<br>Voltage: ${Math.round(kv)} kV` : (el.tags?.voltage ? `<br>Voltage: ${el.tags.voltage}` : '');
+      const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`          : '';
+      const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}` : '';
+      const layer = L.polyline(coords, { color: meta.color, weight: meta.weight, opacity: 0.9 })
+        .bindPopup(`<b>Power Line</b>${voltStr}${name}${operator}`, { maxWidth: 220 });
+      powerLineEntries.push({ tier, layer });
     });
+    powerLineCache = { bounds: pb };  // mark fetched area
+    applyLineVoltageFilter();
   } catch (err) {
     console.error('Power lines fetch failed:', err);
-    overlayLoaded.powerLines = false;  // allow retry on next toggle
+    overlayLoaded.powerLines = false;
   } finally {
     setOverlayLoading('powerLines', false);
   }
 }
 
+function applyLineVoltageFilter() {
+  overlayGroups.powerLines.clearLayers();
+  powerLineEntries.forEach(({ tier, layer }) => {
+    if (activeLineVoltages.has(tier)) layer.addTo(overlayGroups.powerLines);
+  });
+}
+
+function toggleLineVoltage(tier) {
+  if (activeLineVoltages.has(tier)) activeLineVoltages.delete(tier);
+  else activeLineVoltages.add(tier);
+  document.querySelectorAll(`.plant-type-btn[data-line-voltage="${tier}"]`).forEach((btn) =>
+    btn.classList.toggle('active', activeLineVoltages.has(tier))
+  );
+  if (overlayLoaded.powerLines) applyLineVoltageFilter();
+}
+
 async function loadSubstations() {
-  if (map.getZoom() < 7) return;
+  if (map.getZoom() < 7) {
+    substationEntries = [];
+    substationCache   = null;  // invalidate cache when below zoom gate
+    return;
+  }
+
+  // Fast path — viewport fully covered by previously fetched area
+  if (substationCache && substationCache.bounds.contains(map.getBounds())) {
+    applySubVoltageFilter();
+    return;
+  }
 
   overlayLoaded.substations = true;
   setOverlayLoading('substations', true);
-  const b    = map.getBounds();
-  const bbox = `${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`;
+
+  // Fetch with 25% padding for cache buffer
+  const b      = map.getBounds();
+  const latPad = (b.getNorth() - b.getSouth()) * 0.25;
+  const lngPad = (b.getEast()  - b.getWest())  * 0.25;
+  const pb     = L.latLngBounds(
+    [b.getSouth() - latPad, b.getWest() - lngPad],
+    [b.getNorth() + latPad, b.getEast() + lngPad],
+  );
+  const bbox = `${pb.getSouth()},${pb.getWest()},${pb.getNorth()},${pb.getEast()}`;
+
   try {
     const data = await fetchOverpassData(
       `[out:json][timeout:25];(node["power"="substation"](${bbox});way["power"="substation"](${bbox}););out center qt;`,
       32000
     );
-    // Swap in new data only after successful fetch — old markers stay visible while loading
-    overlayGroups.substations.clearLayers();
+    substationEntries = [];
     data.elements.forEach((el) => {
       const lat = el.lat ?? el.center?.lat;
       const lon = el.lon ?? el.center?.lon;
       if (lat == null || lon == null) return;
-      const voltage  = el.tags?.voltage  ? `<br>Voltage: ${el.tags.voltage} V`       : '';
+      const kv       = parseVoltage(el.tags?.voltage);
+      const tier     = voltageToTier(kv);
+      const meta     = VOLTAGE_TIER_META[tier];
+      const voltStr  = kv != null ? `<br>Voltage: ${Math.round(kv)} kV` : (el.tags?.voltage ? `<br>Voltage: ${el.tags.voltage}` : '');
       const name     = el.tags?.name     ? `<br>${escapeHtml(el.tags.name)}`          : '';
       const operator = el.tags?.operator ? `<br>Op: ${escapeHtml(el.tags.operator)}` : '';
-      L.circleMarker([lat, lon], {
-        radius: 9, color: '#fff', fillColor: '#FF8C00', fillOpacity: 1.0, weight: 2,
-      })
-        .bindPopup(`<b>Substation</b>${voltage}${name}${operator}`, { maxWidth: 220 })
-        .addTo(overlayGroups.substations);
+      const layer = L.circleMarker([lat, lon], {
+        radius: 9, color: '#fff', fillColor: meta.color, fillOpacity: 1.0, weight: 2,
+      }).bindPopup(`<b>Substation</b>${voltStr}${name}${operator}`, { maxWidth: 220 });
+      substationEntries.push({ tier, layer });
     });
+    substationCache = { bounds: pb };  // mark fetched area
+    applySubVoltageFilter();
   } catch (err) {
     console.error('Substations fetch failed:', err);
-    overlayLoaded.substations = false;  // allow retry on next toggle
+    overlayLoaded.substations = false;
   } finally {
     setOverlayLoading('substations', false);
+  }
+}
+
+function applySubVoltageFilter() {
+  overlayGroups.substations.clearLayers();
+  substationEntries.forEach(({ tier, layer }) => {
+    if (activeSubVoltages.has(tier)) layer.addTo(overlayGroups.substations);
+  });
+}
+
+function toggleSubVoltage(tier) {
+  if (activeSubVoltages.has(tier)) activeSubVoltages.delete(tier);
+  else activeSubVoltages.add(tier);
+  document.querySelectorAll(`.plant-type-btn[data-sub-voltage="${tier}"]`).forEach((btn) =>
+    btn.classList.toggle('active', activeSubVoltages.has(tier))
+  );
+  if (overlayLoaded.substations) applySubVoltageFilter();
+}
+
+async function loadDataCenters() {
+  if (map.getZoom() < 7) {
+    dataCenterEntries = [];
+    dataCenterCache   = null;
+    overlayGroups.dataCenters.clearLayers();
+    return;
+  }
+
+  // Fast path — viewport fully covered by previously fetched area
+  if (dataCenterCache && dataCenterCache.bounds.contains(map.getBounds())) {
+    overlayGroups.dataCenters.clearLayers();
+    dataCenterEntries.forEach(({ layer }) => layer.addTo(overlayGroups.dataCenters));
+    return;
+  }
+
+  overlayLoaded.dataCenters = true;
+  setOverlayLoading('dataCenters', true);
+
+  const b      = map.getBounds();
+  const latPad = (b.getNorth() - b.getSouth()) * 0.25;
+  const lngPad = (b.getEast()  - b.getWest())  * 0.25;
+  const pb     = L.latLngBounds(
+    [b.getSouth() - latPad, b.getWest() - lngPad],
+    [b.getNorth() + latPad, b.getEast() + lngPad],
+  );
+  const bbox = `${pb.getSouth()},${pb.getWest()},${pb.getNorth()},${pb.getEast()}`;
+
+  try {
+    const data = await fetchOverpassData(
+      `[out:json][timeout:30];`
+      + `(`
+      + `node["building"~"^data_cent"](${bbox});`
+      + `way["building"~"^data_cent"](${bbox});`
+      + `node["telecom"~"^data_cent"](${bbox});`
+      + `way["telecom"~"^data_cent"](${bbox});`
+      + `node["man_made"~"^data_cent"](${bbox});`
+      + `way["man_made"~"^data_cent"](${bbox});`
+      + `);out center qt;`,
+      35000
+    );
+
+    dataCenterEntries = [];
+    overlayGroups.dataCenters.clearLayers();
+
+    data.elements.forEach((el) => {
+      const lat = el.lat ?? el.center?.lat;
+      const lon = el.lon ?? el.center?.lon;
+      if (lat == null || lon == null) return;
+
+      const tags     = el.tags ?? {};
+      const name     = tags.name     ? escapeHtml(tags.name)     : 'Data Center';
+      const operator = tags.operator ? `<br>Op: ${escapeHtml(tags.operator)}` : '';
+      const floors   = tags['building:levels'] ? `<br>Floors: ${tags['building:levels']}` : '';
+
+      const layer = L.circleMarker([lat, lon], {
+        radius: 9, color: '#fff', fillColor: '#E65100', fillOpacity: 0.92, weight: 2,
+      }).bindPopup(`<b>⚡ ${name}</b><br><small>Data Center</small>${operator}${floors}`, { maxWidth: 220 });
+
+      layer.addTo(overlayGroups.dataCenters);
+      dataCenterEntries.push({ layer });
+    });
+
+    dataCenterCache = { bounds: pb };
+    console.log(`Data centers loaded: ${dataCenterEntries.length}`);
+  } catch (err) {
+    console.error('Data centers fetch failed:', err);
+    overlayLoaded.dataCenters = false;
+  } finally {
+    setOverlayLoading('dataCenters', false);
   }
 }
 
@@ -408,89 +671,316 @@ const PLANT_FUEL_COLOR = {
   waste:      '#90A4AE',  // grey-blue
 };
 
+const VOLTAGE_TIER_META = {
+  v500: { label: '500kV+', color: '#F44336', weight: 8   },
+  v345: { label: '345kV',  color: '#FF5722', weight: 6.5 },
+  v230: { label: '230kV',  color: '#FF9800', weight: 5   },
+  v115: { label: '115kV',  color: '#FFC107', weight: 4   },
+  v69:  { label: '69kV',   color: '#8BC34A', weight: 3   },
+  vlow: { label: '<69kV',  color: '#78909C', weight: 2   },
+  vunk: { label: 'Unknown',color: '#546E7A', weight: 2   },
+};
+
+function parseVoltage(str) {
+  if (!str) return null;
+  const first = String(str).split(/[;,\/]/)[0].trim();
+  const n = parseFloat(first.replace(/[^0-9.]/g, ''));
+  if (isNaN(n) || n <= 0) return null;
+  return n >= 1000 ? n / 1000 : n;  // normalize to kV
+}
+
+function voltageToTier(kv) {
+  if (kv === null || kv <= 0) return 'vunk';
+  if (kv >= 500) return 'v500';
+  if (kv >= 345) return 'v345';
+  if (kv >= 230) return 'v230';
+  if (kv >= 115) return 'v115';
+  if (kv >= 69)  return 'v69';
+  return 'vlow';
+}
+
 function parseMW(str) {
   if (!str) return 0;
   const n = parseFloat(String(str).replace(/[^0-9.]/g, ''));
   return isNaN(n) ? 0 : n;
 }
 
-// Radius in meters based on output capacity — proxy for field strength
+// Radius in meters based on output capacity (max = 2 miles for largest plants)
+const MI = 1609.34;
 function plantEffectRadius(mw, source) {
-  if (source === 'nuclear') return 12000;  // 12 km regardless of stated MW
-  if (mw >= 2000) return 9000;
-  if (mw >= 1000) return 7000;
-  if (mw >= 500)  return 5000;
-  if (mw >= 100)  return 3000;
-  if (mw >  0)    return 1500;
-  return 4000;  // unknown capacity — assume large
+  if (source === 'nuclear') return Math.round(2.0 * MI);   // 2 mi regardless of stated MW
+  if (mw >= 2000) return Math.round(2.0  * MI);
+  if (mw >= 1000) return Math.round(1.5  * MI);
+  if (mw >= 500)  return Math.round(1.0  * MI);
+  if (mw >= 100)  return Math.round(0.5  * MI);
+  if (mw >  0)    return Math.round(0.25 * MI);
+  return Math.round(1.0 * MI);  // unknown capacity
 }
 
-async function loadPowerPlants() {
-  overlayLoaded.powerPlants = true;
-  setOverlayLoading('powerPlants', true);
-  // One-time load for CONUS + Alaska + Hawaii
+function buildPlantEntries(elements) {
+  powerPlantEntries = [];
+  elements.forEach((el) => {
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (lat == null || lon == null) return;
+
+    const rawSource = (el.tags?.['plant:source'] ?? '').toLowerCase();
+    const source    = PLANT_FUEL_COLOR[rawSource] ? rawSource : 'other';
+    const mw        = parseMW(el.tags?.['plant:output:electricity']);
+    const name      = el.tags?.name     ? escapeHtml(el.tags.name)     : 'Power Plant';
+    const operator  = el.tags?.operator ? escapeHtml(el.tags.operator) : '';
+    const fuelColor = PLANT_FUEL_COLOR[rawSource] ?? '#607D8B';
+    const radius    = plantEffectRadius(mw, rawSource);
+    const radiusMi  = (radius / MI).toFixed(2).replace(/\.?0+$/, '');
+
+    const fuelLabel = rawSource
+      ? rawSource.charAt(0).toUpperCase() + rawSource.slice(1)
+      : 'Unknown';
+    const popup = `<b>${name}</b>`
+      + `<br>Type: ${fuelLabel}`
+      + (mw       ? `<br>Capacity: ${mw} MW`      : '')
+      + (operator ? `<br>Operator: ${operator}`    : '')
+      + `<br><span style="color:#e94560">⚠ Effect zone: ${radiusMi} mi radius</span>`;
+
+    const circleLayer = L.circle([lat, lon], {
+      radius,
+      color:       '#e94560',
+      weight:      1.5,
+      opacity:     0.5,
+      fillColor:   '#e94560',
+      fillOpacity: 0.10,
+      interactive: false,
+    });
+
+    const markerLayer = L.circleMarker([lat, lon], {
+      radius:      6,
+      color:       '#fff',
+      weight:      2,
+      fillColor:   fuelColor,
+      fillOpacity: 1.0,
+    }).bindPopup(popup, { maxWidth: 260 });
+
+    powerPlantEntries.push({ source, circleLayer, markerLayer });
+  });
+}
+
+// ============================================================
+// 6.6 Places / POI overlays — combined Overpass fetch
+// ============================================================
+
+function poiDivIcon(type) {
+  const { label, color } = POI_META[type];
+  return L.divIcon({
+    html:        `<div class="poi-marker" style="background:${color}">${label}</div>`,
+    className:   '',
+    iconSize:    [26, 26],
+    iconAnchor:  [13, 13],
+    popupAnchor: [0, -16],
+  });
+}
+
+function buildPoiPopup(el, type) {
+  const tags    = el.tags ?? {};
+  const name    = tags.name ? escapeHtml(tags.name) : POI_META[type].layerLabel;
+  const hn      = tags['addr:housenumber'] ?? '';
+  const street  = tags['addr:street']      ?? '';
+  const city    = tags['addr:city']        ?? '';
+  const addr    = [hn && street ? `${hn} ${street}` : street, city].filter(Boolean).join(', ');
+  const phone   = tags.phone   || tags['contact:phone']   || '';
+  const website = tags.website || tags['contact:website'] || '';
+  const hours   = tags.opening_hours ?? '';
+  const cuisine = tags.cuisine ? tags.cuisine.replace(/_/g, ' ') : '';
+
+  let extra = '';
+  if (type === 'wholeFoods') extra = '<br>Whole Foods Market';
+  if (type === 'groceries')  extra = `<br>${tags.shop === 'supermarket' ? 'Supermarket' : 'Grocery Store'}`;
+  if (type === 'cinemas')    extra = '<br>Movie Theater';
+
+  const websiteHtml = website
+    ? `<br><a href="${escapeHtml(website)}" target="_blank" rel="noopener" style="color:#2979FF">Website ↗</a>`
+    : '';
+
+  return `<b>${name}</b>${extra}`
+    + (addr  ? `<br><small>${escapeHtml(addr)}</small>`  : '')
+    + (hours ? `<br><small>⏰ ${escapeHtml(hours)}</small>` : '')
+    + (phone ? `<br><small>📞 ${escapeHtml(phone)}</small>` : '')
+    + websiteHtml;
+}
+
+/** Classify a single OSM element into one or more place types. */
+function classifyPlaceElement(el) {
+  const tags  = el.tags ?? {};
+  const types = new Set();
+
+  const brand = (tags.brand ?? '').toLowerCase();
+  const name  = (tags.name  ?? '').toLowerCase();
+  if (brand.includes('whole foods') || name.includes('whole foods')) types.add('wholeFoods');
+
+  const shop = tags.shop ?? '';
+  if (shop === 'supermarket' || shop === 'grocery') types.add('groceries');
+
+  if (tags.amenity === 'cinema') types.add('cinemas');
+
+  return [...types];
+}
+
+/** Re-populate all place overlay groups from current placesEntries. */
+function populatePlaceGroups() {
+  PLACE_KEYS.forEach(k => overlayGroups[k].clearLayers());
+  placesEntries.forEach(({ type, layer }) => layer.addTo(overlayGroups[type]));
+}
+
+async function loadPlaces() {
+  if (map.getZoom() < 9) {
+    // Below zoom gate — clear data silently; will reload when user zooms in
+    placesEntries = [];
+    placesCache   = null;
+    PLACE_KEYS.forEach(k => {
+      overlayGroups[k].clearLayers();
+      overlayLoaded[k] = false;
+    });
+    return;
+  }
+
+  // Fast path — current viewport already covered by fetched data
+  if (placesCache && placesCache.bounds.contains(map.getBounds())) {
+    populatePlaceGroups();
+    return;
+  }
+
+  // Show loading state on every active places button
+  PLACE_KEYS.filter(k => activeOverlays.has(k)).forEach(k => setOverlayLoading(k, true));
+
+  // Fetch with 25% padding for cache buffer
+  const b      = map.getBounds();
+  const latPad = (b.getNorth() - b.getSouth()) * 0.25;
+  const lngPad = (b.getEast()  - b.getWest())  * 0.25;
+  const pb     = L.latLngBounds(
+    [b.getSouth() - latPad, b.getWest() - lngPad],
+    [b.getNorth() + latPad, b.getEast() + lngPad],
+  );
+  const bbox = `${pb.getSouth()},${pb.getWest()},${pb.getNorth()},${pb.getEast()}`;
+
   try {
     const data = await fetchOverpassData(
-      `[out:json][timeout:60];(node["power"="plant"](18,-170,72,-60);way["power"="plant"](18,-170,72,-60);relation["power"="plant"](18,-170,72,-60););out center qt;`,
-      70000
+      `[out:json][timeout:30];`
+      + `(`
+      + `node["brand"~"Whole Foods",i](${bbox});`
+      + `way["brand"~"Whole Foods",i](${bbox});`
+      + `node["shop"~"^(supermarket|grocery)$"](${bbox});`
+      + `way["shop"~"^(supermarket|grocery)$"](${bbox});`
+      + `node["amenity"="cinema"](${bbox});`
+      + `way["amenity"="cinema"](${bbox});`
+      + `);out center qt;`,
+      35000
     );
-    overlayGroups.powerPlants.clearLayers();
+
+    placesEntries = [];
     data.elements.forEach((el) => {
-      const lat = el.lat ?? el.center?.lat;
-      const lon = el.lon ?? el.center?.lon;
+      const lat   = el.lat ?? el.center?.lat;
+      const lon   = el.lon ?? el.center?.lon;
       if (lat == null || lon == null) return;
 
-      const source   = (el.tags?.['plant:source'] ?? '').toLowerCase();
-      const mw       = parseMW(el.tags?.['plant:output:electricity']);
-      const name     = el.tags?.name     ? escapeHtml(el.tags.name)     : 'Power Plant';
-      const operator = el.tags?.operator ? escapeHtml(el.tags.operator) : '';
-      const fuelColor = PLANT_FUEL_COLOR[source] ?? '#90A4AE';
-      const radius    = plantEffectRadius(mw, source);
-      const radiusKm  = (radius / 1000).toFixed(1);
-
-      const fuelLabel = source
-        ? source.charAt(0).toUpperCase() + source.slice(1)
-        : 'Unknown';
-      const popup = `<b>${name}</b>`
-        + `<br>Type: ${fuelLabel}`
-        + (mw   ? `<br>Capacity: ${mw} MW`      : '')
-        + (operator ? `<br>Operator: ${operator}` : '')
-        + `<br><span style="color:#e94560">⚠ Effect zone: ${radiusKm} km radius</span>`;
-
-      // Effect zone — semi-transparent red circle
-      L.circle([lat, lon], {
-        radius,
-        color:       '#e94560',
-        weight:      1.5,
-        opacity:     0.5,
-        fillColor:   '#e94560',
-        fillOpacity: 0.10,
-        interactive: false,
-      }).addTo(overlayGroups.powerPlants);
-
-      // Center marker — colored by fuel type
-      L.circleMarker([lat, lon], {
-        radius:      12,
-        color:       '#fff',
-        weight:      2,
-        fillColor:   fuelColor,
-        fillOpacity: 1.0,
-      }).bindPopup(popup, { maxWidth: 260 }).addTo(overlayGroups.powerPlants);
+      const types = classifyPlaceElement(el);
+      types.forEach((type) => {
+        const layer = L.marker([lat, lon], { icon: poiDivIcon(type) })
+          .bindPopup(buildPoiPopup(el, type), { maxWidth: 240 });
+        placesEntries.push({ type, layer });
+      });
     });
+
+    placesCache = { bounds: pb };
+    PLACE_KEYS.forEach(k => { overlayLoaded[k] = true; });
+    populatePlaceGroups();
+    console.log(`Places loaded: ${placesEntries.length} markers`);
   } catch (err) {
-    console.error('Power plants fetch failed:', err);
-    overlayLoaded.powerPlants = false;  // allow retry on next toggle
+    console.error('Places fetch failed:', err);
+    PLACE_KEYS.forEach(k => { overlayLoaded[k] = false; });
   } finally {
-    setOverlayLoading('powerPlants', false);
+    PLACE_KEYS.forEach(k => setOverlayLoading(k, false));
   }
 }
 
+async function loadPowerPlants() {
+  // Fast path — already in memory (e.g. toggled off then back on)
+  if (powerPlantEntries.length > 0) {
+    applyPlantTypeFilter();
+    return;
+  }
+
+  overlayLoaded.powerPlants = true;
+  setOverlayLoading('powerPlants', true);
+
+  let elements = null;
+
+  // Try sessionStorage — survives page refresh within the same browser session
+  try {
+    const cached = sessionStorage.getItem(PLANT_SESSION_KEY);
+    if (cached) {
+      elements = JSON.parse(cached);
+      console.log(`Power plants: cache hit (${elements.length} elements)`);
+    }
+  } catch { /* parse error or unavailable — fall through to fetch */ }
+
+  if (!elements) {
+    // One-time Overpass fetch for CONUS + Alaska + Hawaii
+    try {
+      const data = await fetchOverpassData(
+        `[out:json][timeout:60];(node["power"="plant"](18,-170,72,-60);way["power"="plant"](18,-170,72,-60);relation["power"="plant"](18,-170,72,-60););out center qt;`,
+        70000
+      );
+      elements = data.elements;
+      try {
+        sessionStorage.setItem(PLANT_SESSION_KEY, JSON.stringify(elements));
+      } catch { /* quota exceeded — no problem, will re-fetch next session */ }
+    } catch (err) {
+      console.error('Power plants fetch failed:', err);
+      overlayLoaded.powerPlants = false;  // allow retry on next toggle
+      setOverlayLoading('powerPlants', false);
+      return;
+    }
+  }
+
+  buildPlantEntries(elements);
+  applyPlantTypeFilter();
+  setOverlayLoading('powerPlants', false);
+}
+
+function applyPlantTypeFilter() {
+  overlayGroups.powerPlants.clearLayers();
+  powerPlantEntries.forEach(({ source, circleLayer, markerLayer }) => {
+    if (activePlantTypes.has(source)) {
+      circleLayer.addTo(overlayGroups.powerPlants);
+      markerLayer.addTo(overlayGroups.powerPlants);
+    }
+  });
+}
+
+function togglePlantType(type) {
+  if (activePlantTypes.has(type)) {
+    activePlantTypes.delete(type);
+  } else {
+    activePlantTypes.add(type);
+  }
+  document.querySelectorAll(`.plant-type-btn[data-plant-type="${type}"]`).forEach((btn) => {
+    btn.classList.toggle('active', activePlantTypes.has(type));
+  });
+  applyPlantTypeFilter();
+}
+
+const PLACE_KEYS = ['wholeFoods', 'groceries', 'cinemas'];
+
 function onLayerMoveEnd() {
-  if (!activeOverlays.has('powerLines') && !activeOverlays.has('substations')) return;
+  const needsInfra  = activeOverlays.has('powerLines') || activeOverlays.has('substations');
+  const needsDC     = activeOverlays.has('dataCenters');
+  const needsPlaces = PLACE_KEYS.some(k => activeOverlays.has(k));
+  if (!needsInfra && !needsDC && !needsPlaces) return;
   clearTimeout(powerFetchTimer);
   powerFetchTimer = setTimeout(() => {
     if (activeOverlays.has('powerLines'))  loadPowerLines();
     if (activeOverlays.has('substations')) loadSubstations();
+    if (needsDC)     loadDataCenters();
+    if (needsPlaces) loadPlaces();
   }, 1200);  // longer debounce — reduces Overpass rate-limit hits during panning
 }
 
@@ -574,27 +1064,31 @@ function disableFollowMe() {
 // ============================================================
 // 8. Map render helpers
 // ============================================================
-function addPinToMap(lat, lng, rating, note) {
+function addPinToMap(lat, lng, rating, note, docId = null, createdBy = null) {
   const color = PIN_COLORS[rating] ?? PIN_COLORS.neutral;
-  const svg   = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
-    <circle cx="14" cy="14" r="11" fill="${color}" fill-opacity="0.85" stroke="#fff" stroke-width="2.5"/>
-  </svg>`;
+  const html  = `<div class="saved-pin">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 42" width="32" height="42">
+      <path d="M16 0C9.37 0 4 5.37 4 12c0 9 12 30 12 30s12-21 12-30C28 5.37 22.63 0 16 0z"
+            fill="${color}" stroke="#fff" stroke-width="2"/>
+      <circle cx="16" cy="12" r="5.5" fill="#fff" fill-opacity="0.9"/>
+    </svg>
+  </div>`;
 
   const icon = L.divIcon({
-    html:        svg,
+    html,
     className:   '',
-    iconSize:    [28, 28],
-    iconAnchor:  [14, 14],
-    popupAnchor: [0, -16],
+    iconSize:    [32, 42],
+    iconAnchor:  [16, 42],
+    popupAnchor: [0, -44],
   });
 
   const marker = L.marker([lat, lng], { icon }).addTo(map);
-  marker.bindPopup(buildPopupHtml(rating, note), { maxWidth: 240 });
+  marker.bindPopup(buildPopupHtml(rating, note, docId, createdBy), { maxWidth: 240 });
   marker.on('click', L.DomEvent.stopPropagation);
   return marker;
 }
 
-function addAreaToMap(vertices, rating, note) {
+function addAreaToMap(vertices, rating, note, docId = null, createdBy = null) {
   const color = PIN_COLORS[rating] ?? PIN_COLORS.neutral;
 
   const polygon = L.polygon(vertices, {
@@ -604,15 +1098,24 @@ function addAreaToMap(vertices, rating, note) {
     weight:      2,
   }).addTo(map);
 
-  polygon.bindPopup(buildPopupHtml(rating, note), { maxWidth: 240 });
+  polygon.bindPopup(buildPopupHtml(rating, note, docId, createdBy), { maxWidth: 240 });
   polygon.on('click', L.DomEvent.stopPropagation);
   return polygon;
 }
 
-function buildPopupHtml(rating, note) {
-  const label   = rating.charAt(0).toUpperCase() + rating.slice(1);
+function buildPopupHtml(rating, note, docId = null, createdBy = null) {
+  const label    = rating.charAt(0).toUpperCase() + rating.slice(1);
+  const byHtml   = createdBy
+    ? `<div class="popup-by">by ${escapeHtml(shortName(createdBy))}</div>`
+    : '';
   const noteHtml = note ? `<div class="popup-note">${escapeHtml(note)}</div>` : '';
-  return `<div class="popup-rating ${rating}">${label}</div>${noteHtml}`;
+  const actions  = docId
+    ? `<div class="popup-actions">
+         <button class="popup-action-btn popup-edit-btn"   data-doc-id="${docId}">${PENCIL_SVG} Edit</button>
+         <button class="popup-action-btn popup-delete-btn" data-doc-id="${docId}">${TRASH_SVG} Delete</button>
+       </div>`
+    : '';
+  return `<div class="popup-rating ${rating}">${label}</div>${byHtml}${noteHtml}${actions}`;
 }
 
 // ============================================================
@@ -626,15 +1129,19 @@ function loadAllDrawings(userId) {
 async function loadPins(userId) {
   if (!db) return;
   try {
-    const snap = await getDocs(query(collection(db, 'pins'), where('userId', '==', userId)));
+    const uids = familyUidList(userId);
+    const snap = await getDocs(query(collection(db, 'pins'), where('userId', 'in', uids)));
     console.log(`Loaded ${snap.size} pins`);
     snap.forEach((d) => {
-      const { lat, lng, rating, note } = d.data();
-      const layer = addPinToMap(lat, lng, rating, note ?? '');
+      const data = d.data();
+      const { lat, lng, rating, note } = data;
+      const createdBy = data.createdBy ?? FAMILY_NAMES[data.userId] ?? null;
+      const layer = addPinToMap(lat, lng, rating, note ?? '', d.id, createdBy);
       pushReviewItem({
         id: d.id, type: 'pin', rating, note: note ?? '',
         lat, lng, bounds: null, layer,
-        createdAt: d.data().createdAt?.toDate() ?? new Date(0),
+        createdBy,
+        createdAt: data.createdAt?.toDate() ?? new Date(0),
       });
     });
   } catch (err) { console.error('Load pins failed:', err); }
@@ -643,27 +1150,32 @@ async function loadPins(userId) {
 async function loadDrawings(userId) {
   if (!db) return;
   try {
-    const snap = await getDocs(query(collection(db, 'drawings'), where('userId', '==', userId)));
+    const uids = familyUidList(userId);
+    const snap = await getDocs(query(collection(db, 'drawings'), where('userId', 'in', uids)));
     let strokes = 0, areas = 0;
     snap.forEach((d) => {
       const data = d.data();
+      const createdBy = data.createdBy ?? FAMILY_NAMES[data.userId] ?? null;
       if (data.type === 'stroke') {
-        renderSavedStroke(data.rating, data.points, d.id);
+        const note  = data.note ?? '';
+        const layer = renderSavedStroke(data.rating, data.points, d.id, note, createdBy, data.weight ?? PAINT_STROKE_WEIGHT_DEFAULT);
         const c = computeCentroid(data.points);
         pushReviewItem({
-          id: d.id, type: 'stroke', rating: data.rating, note: '',
-          lat: c.lat, lng: c.lng, bounds: null,
+          id: d.id, type: 'stroke', rating: data.rating, note,
+          lat: c.lat, lng: c.lng, bounds: null, layer,
+          createdBy,
           createdAt: data.createdAt?.toDate() ?? new Date(0),
         });
         strokes++;
       } else if (data.type === 'area') {
         const verts = data.vertices.map(v => L.latLng(v.lat, v.lng));
-        const layer = addAreaToMap(verts, data.rating, data.note ?? '');
+        const layer = addAreaToMap(verts, data.rating, data.note ?? '', d.id, createdBy);
         const bounds = L.polygon(verts).getBounds();
         const center = bounds.getCenter();
         pushReviewItem({
           id: d.id, type: 'area', rating: data.rating, note: data.note ?? '',
           lat: center.lat, lng: center.lng, bounds, layer,
+          createdBy,
           createdAt: data.createdAt?.toDate() ?? new Date(0),
         });
         areas++;
@@ -673,32 +1185,38 @@ async function loadDrawings(userId) {
   } catch (err) { console.error('Load drawings failed:', err); }
 }
 
-function renderSavedStroke(rating, points, docId) {
-  const layers = points.map(({ lat, lng, r }) =>
-    L.circle([lat, lng], {
-      radius:      r,
-      color:       'none',
-      fillColor:   PAINT_FILL[rating],
-      fillOpacity: PAINT_STROKE_OPACITY,
-      interactive: false,
-    }).addTo(map)
-  );
-  allStrokes.push({ layers, points, rating, docId });
+function renderSavedStroke(rating, points, docId, note = '', createdBy = null, weight = PAINT_STROKE_WEIGHT_DEFAULT) {
+  const latlngs = points.map(({ lat, lng }) => [lat, lng]);
+  const layer   = L.polyline(latlngs, {
+    color:       PAINT_FILL[rating],
+    weight,
+    opacity:     PAINT_STROKE_OPACITY,
+    lineCap:     'round',
+    lineJoin:    'round',
+    interactive: true,
+  }).bindPopup(buildPopupHtml(rating, note, docId, createdBy), { maxWidth: 240 })
+    .addTo(map);
+  allStrokes.push({ layers: [layer], points, rating, weight, docId });
+  return layer;
 }
 
 async function savePin(userId, lat, lng, rating, note) {
   if (!db) throw new Error('Firestore not ready');
   const ref = await addDoc(collection(db, 'pins'), {
-    userId, lat, lng, rating, note: note.trim(), createdAt: serverTimestamp(),
+    userId, lat, lng, rating, note: note.trim(),
+    createdBy: currentUser?.displayName || currentUser?.email || 'Unknown',
+    createdAt: serverTimestamp(),
   });
   console.log('Pin saved:', ref.id);
   return ref;
 }
 
-async function saveStroke(userId, rating, points) {
+async function saveStroke(userId, rating, points, weight = PAINT_STROKE_WEIGHT_DEFAULT) {
   if (!db) throw new Error('Firestore not ready');
   const ref = await addDoc(collection(db, 'drawings'), {
-    userId, type: 'stroke', rating, points, createdAt: serverTimestamp(),
+    userId, type: 'stroke', rating, points, weight, note: '',
+    createdBy: currentUser?.displayName || currentUser?.email || 'Unknown',
+    createdAt: serverTimestamp(),
   });
   console.log('Stroke saved:', ref.id);
   return ref;
@@ -708,7 +1226,9 @@ async function saveArea(userId, vertices, rating, note) {
   if (!db) throw new Error('Firestore not ready');
   const plainVerts = vertices.map(v => ({ lat: v.lat, lng: v.lng }));
   const ref = await addDoc(collection(db, 'drawings'), {
-    userId, type: 'area', rating, note: note.trim(), vertices: plainVerts, createdAt: serverTimestamp(),
+    userId, type: 'area', rating, note: note.trim(), vertices: plainVerts,
+    createdBy: currentUser?.displayName || currentUser?.email || 'Unknown',
+    createdAt: serverTimestamp(),
   });
   console.log('Area saved:', ref.id);
   return ref;
@@ -830,6 +1350,24 @@ function initDrawingHud() {
 
   // Set initial paint rating display
   setPaintRating('neutral');
+
+  // Paint: stroke width slider
+  const widthSlider  = document.getElementById('paint-width');
+  const widthPreview = document.getElementById('paint-width-preview');
+  function updateWidthPreview() {
+    const w = paintStrokeWeight;
+    widthPreview.style.height       = `${Math.min(w, 24)}px`;
+    widthPreview.style.width        = `${Math.min(w * 2, 36)}px`;
+    widthPreview.style.borderRadius = `${w}px`;
+    widthPreview.style.background   = PAINT_FILL[paintRating];
+  }
+  widthSlider.addEventListener('input', () => {
+    paintStrokeWeight = parseInt(widthSlider.value, 10);
+    updateWidthPreview();
+  });
+  // Make updateWidthPreview available to setPaintRating via the element
+  widthPreview._update = updateWidthPreview;
+  updateWidthPreview();
 }
 
 function updateHudContent(mode) {
@@ -844,6 +1382,9 @@ function setPaintRating(rating) {
     btn.classList.toggle('active', on);
     btn.setAttribute('aria-pressed', String(on));
   });
+  // Refresh width preview color if it has been initialized
+  const prev = document.getElementById('paint-width-preview');
+  if (prev?._update) prev._update();
 }
 
 // ============================================================
@@ -883,10 +1424,10 @@ function onPaintPointerDown(e) {
   if (!currentUser) { nudgeSignIn(); return; }
 
   e.preventDefault();
-  isPainting         = true;
-  activeStroke       = [];
-  activeStrokeLayers = [];
-  lastPaintPx        = null;
+  isPainting     = true;
+  activeStroke   = [];
+  activePolyline = null;
+  lastPaintPx    = null;
   emitPaintPoint(e);
 }
 
@@ -920,21 +1461,20 @@ function emitPaintPoint(e) {
   const py     = e.clientY - rect.top;
   const latlng = map.containerPointToLatLng(L.point(px, py));
 
-  // Radius in meters — 16 px worth of geographic distance at current zoom
-  const zoom   = map.getZoom();
-  const mpp    = (40075016.686 * Math.abs(Math.cos(latlng.lat * Math.PI / 180))) / Math.pow(2, zoom + 8);
-  const radius = Math.round(PAINT_RADIUS_PX * mpp);
+  // Create the polyline on the first point of each stroke
+  if (!activePolyline) {
+    activePolyline = L.polyline([], {
+      color:       PAINT_FILL[paintRating],
+      weight:      paintStrokeWeight,
+      opacity:     PAINT_STROKE_OPACITY,
+      lineCap:     'round',
+      lineJoin:    'round',
+      interactive: false,
+    }).addTo(map);
+  }
 
-  const circle = L.circle(latlng, {
-    radius,
-    color:       'none',
-    fillColor:   PAINT_FILL[paintRating],
-    fillOpacity: PAINT_STROKE_OPACITY,
-    interactive: false,
-  }).addTo(map);
-
-  activeStroke.push({ lat: latlng.lat, lng: latlng.lng, r: radius });
-  activeStrokeLayers.push(circle);
+  activeStroke.push({ lat: latlng.lat, lng: latlng.lng });
+  activePolyline.addLatLng(latlng);
   lastPaintPx   = { x: e.clientX, y: e.clientY };
   lastPaintTime = Date.now();
 }
@@ -944,21 +1484,45 @@ async function endStroke() {
 
   // Register stroke for undo before async save
   const entry = {
-    layers: [...activeStrokeLayers],
+    layers: activePolyline ? [activePolyline] : [],
     points: [...activeStroke],
     rating: paintRating,
+    weight: paintStrokeWeight,
     docId:  null,   // filled in below once Firestore confirms
   };
   allStrokes.push(entry);
-  activeStroke       = [];
-  activeStrokeLayers = [];
+  activeStroke   = [];
+  activePolyline = null;
 
   if (db && currentUser) {
     try {
-      const ref = await saveStroke(currentUser.uid, entry.rating, entry.points);
-      entry.docId = ref.id;  // back-fill for undo/delete support
-      const c = computeCentroid(entry.points);
-      pushReviewItem({ id: ref.id, type: 'stroke', rating: entry.rating, note: '', lat: c.lat, lng: c.lng, bounds: null, createdAt: new Date() });
+      const ref       = await saveStroke(currentUser.uid, entry.rating, entry.points, entry.weight);
+      entry.docId     = ref.id;
+      const createdBy = currentUser.displayName || currentUser.email || null;
+
+      // Swap the non-interactive drawing-time polyline for an interactive one with popup
+      const oldLayer = entry.layers[0];
+      if (oldLayer) {
+        const latlngs  = oldLayer.getLatLngs();
+        map.removeLayer(oldLayer);
+        const newLayer = L.polyline(latlngs, {
+          color:       PAINT_FILL[entry.rating],
+          weight:      entry.weight,
+          opacity:     PAINT_STROKE_OPACITY,
+          lineCap:     'round',
+          lineJoin:    'round',
+          interactive: true,
+        }).bindPopup(buildPopupHtml(entry.rating, '', ref.id, createdBy), { maxWidth: 240 })
+          .addTo(map);
+        entry.layers[0] = newLayer;
+
+        const c = computeCentroid(entry.points);
+        pushReviewItem({
+          id: ref.id, type: 'stroke', rating: entry.rating, note: '',
+          lat: c.lat, lng: c.lng, bounds: null, layer: newLayer,
+          createdBy, createdAt: new Date(),
+        });
+      }
     } catch (err) { console.error('Stroke save failed:', err); }
   }
 }
@@ -1187,27 +1751,30 @@ function initModal() {
       const { lat, lng } = ctx.latlng;
       const layer = addPinToMap(lat, lng, rating, note);
       try {
-        const ref = await savePin(currentUser.uid, lat, lng, rating, note);
-        pushReviewItem({ id: ref.id, type: 'pin', rating, note, lat, lng, bounds: null, layer, createdAt: new Date() });
+        const ref       = await savePin(currentUser.uid, lat, lng, rating, note);
+        const createdBy = currentUser.displayName || currentUser.email || null;
+        layer.setPopupContent(buildPopupHtml(rating, note, ref.id, createdBy));
+        pushReviewItem({ id: ref.id, type: 'pin', rating, note, lat, lng, bounds: null, layer, createdBy, createdAt: new Date() });
       }
       catch (err) { console.error('Pin save failed:', err); }
 
     } else if (ctx.type === 'polygon') {
       const layer = addAreaToMap(ctx.vertices, rating, note);
       try {
-        const ref = await saveArea(currentUser.uid, ctx.vertices, rating, note);
+        const ref       = await saveArea(currentUser.uid, ctx.vertices, rating, note);
+        const createdBy = currentUser.displayName || currentUser.email || null;
+        layer.setPopupContent(buildPopupHtml(rating, note, ref.id, createdBy));
         const bounds = L.polygon(ctx.vertices).getBounds();
         const center = bounds.getCenter();
-        pushReviewItem({ id: ref.id, type: 'area', rating, note, lat: center.lat, lng: center.lng, bounds, layer, createdAt: new Date() });
+        pushReviewItem({ id: ref.id, type: 'area', rating, note, lat: center.lat, lng: center.lng, bounds, layer, createdBy, createdAt: new Date() });
       }
       catch (err) { console.error('Area save failed:', err); }
-      // Return to polygon mode so user can draw another area
       setMode('polygon');
 
     } else if (ctx.type === 'edit-note') {
       const item = reviewItems[ctx.idx];
       item.note = note.trim();
-      if (item.layer) item.layer.setPopupContent(buildPopupHtml(item.rating, item.note));
+      if (item.layer) item.layer.setPopupContent(buildPopupHtml(item.rating, item.note, item.id, item.createdBy ?? null));
       try {
         const col = item.type === 'pin' ? 'pins' : 'drawings';
         await updateDoc(doc(db, col, item.id), { note: item.note });
@@ -1298,6 +1865,24 @@ function initNotesPanel() {
 
   document.getElementById('btn-notes-close').addEventListener('click', closeNotesPanel);
 
+  // Notes filter input
+  const filterInput = document.getElementById('notes-filter');
+  const filterClear = document.getElementById('notes-filter-clear');
+
+  filterInput.addEventListener('input', () => {
+    notesFilter = filterInput.value.trim().toLowerCase();
+    filterClear.classList.toggle('hidden', notesFilter.length === 0);
+    renderReviewList();
+  });
+
+  filterClear.addEventListener('click', () => {
+    filterInput.value = '';
+    notesFilter = '';
+    filterClear.classList.add('hidden');
+    filterInput.focus();
+    renderReviewList();
+  });
+
   // Escape key
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !document.getElementById('notes-panel').classList.contains('hidden')) {
@@ -1332,6 +1917,13 @@ function closeNotesPanel() {
   const btn = document.getElementById('btn-notes');
   btn.classList.remove('active');
   btn.setAttribute('aria-expanded', 'false');
+  // Reset filter so it doesn't persist across opens
+  const filterInput = document.getElementById('notes-filter');
+  if (filterInput && notesFilter) {
+    filterInput.value = '';
+    notesFilter = '';
+    document.getElementById('notes-filter-clear').classList.add('hidden');
+  }
 }
 
 async function deleteItem(idx) {
@@ -1363,6 +1955,18 @@ async function deleteItem(idx) {
 const PENCIL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`;
 const TRASH_SVG  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
 
+function noteMatchesFilter(item, q) {
+  if (!q) return true;
+  if (item.note?.toLowerCase().includes(q))       return true;
+  if (item.rating?.toLowerCase().includes(q))     return true;
+  if (item.type?.toLowerCase().includes(q))       return true;
+  if (item.createdBy?.toLowerCase().includes(q))  return true;
+  // Check geocoded location name if already cached
+  const locKey = `${item.lat.toFixed(3)},${item.lng.toFixed(3)}`;
+  if (geocodeCache[locKey]?.toLowerCase().includes(q)) return true;
+  return false;
+}
+
 function renderReviewList() {
   const list = document.getElementById('notes-list');
 
@@ -1371,11 +1975,29 @@ function renderReviewList() {
     return;
   }
 
-  list.innerHTML = reviewItems.map((item, idx) => {
+  // Apply filter — keep original indices so edit/delete still work
+  const filtered = reviewItems
+    .map((item, idx) => ({ item, idx }))
+    .filter(({ item }) => noteMatchesFilter(item, notesFilter));
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<p class="review-empty">No notes match "<strong>${escapeHtml(notesFilter)}</strong>".</p>`;
+    return;
+  }
+
+  // Count badge when filter is active
+  const countHtml = notesFilter
+    ? `<div class="notes-filter-count">${filtered.length} of ${reviewItems.length} notes</div>`
+    : '';
+
+  list.innerHTML = countHtml + filtered.map(({ item, idx }) => {
     const icon     = REVIEW_ICONS[item.type] ?? '';
     const noteText = item.note ? escapeHtml(item.note) : '';
     const dateText = relativeTime(item.createdAt);
-    const canEdit  = item.type !== 'stroke';  // strokes have no note to edit
+    const byText   = item.createdBy
+      ? `<span class="review-by">by ${escapeHtml(shortName(item.createdBy))}</span>`
+      : '';
+    const canEdit  = true;  // all item types support notes
     const editBtn  = canEdit
       ? `<button class="review-action-btn review-edit-btn" data-idx="${idx}" aria-label="Edit note">${PENCIL_SVG}</button>`
       : '';
@@ -1386,6 +2008,7 @@ function renderReviewList() {
         <span class="review-body">
           <span class="review-location" data-idx="${idx}">…</span>
           <span class="review-note">${noteText}</span>
+          ${byText}
         </span>
         <span class="review-date">${dateText}</span>
       </div>
@@ -1480,18 +2103,210 @@ function flyToItem(item) {
 }
 
 // ============================================================
-// 18. Bootstrap
+// 18. Search
+// ============================================================
+function initSearch() {
+  const input     = document.getElementById('search-input');
+  const clearBtn  = document.getElementById('search-clear');
+  const resultBox = document.getElementById('search-results');
+  let debounceTimer  = null;
+  let focusedIdx     = -1;
+  let searchMarker   = null;
+
+  function placeSearchMarker(lat, lon, name) {
+    if (searchMarker) map.removeLayer(searchMarker);
+    const icon = L.divIcon({
+      html: `<div class="search-pin">
+               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 42" width="32" height="42">
+                 <path d="M16 0C9.37 0 4 5.37 4 12c0 9 12 30 12 30s12-21 12-30C28 5.37 22.63 0 16 0z"
+                       fill="#00BCD4" stroke="#fff" stroke-width="2"/>
+                 <circle cx="16" cy="12" r="5" fill="#fff"/>
+               </svg>
+             </div>`,
+      className:   '',
+      iconSize:    [32, 42],
+      iconAnchor:  [16, 42],
+      popupAnchor: [0, -44],
+    });
+
+    const popupHtml = `
+      <b>${escapeHtml(name)}</b>
+      <div style="margin-top:8px">
+        <button id="btn-save-search-pin"
+          style="width:100%;padding:5px 10px;background:#2979FF;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.78rem;font-weight:600;">
+          + Save as Pin
+        </button>
+      </div>`;
+
+    searchMarker = L.marker([lat, lon], { icon, zIndexOffset: 1000 })
+      .bindPopup(popupHtml, { maxWidth: 220 })
+      .addTo(map);
+
+    // Attach listener BEFORE openPopup() so the first open is caught
+    searchMarker.on('popupopen', () => {
+      const btn = document.getElementById('btn-save-search-pin');
+      if (!btn) return;
+      btn.addEventListener('click', () => {
+        searchMarker.closePopup();
+        if (!currentUser) { nudgeSignIn(); return; }
+        openModal({ type: 'pin', latlng: { lat, lng: lon } });
+      });
+    });
+
+    searchMarker.openPopup();
+  }
+
+  function clearSearchMarker() {
+    if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
+  }
+
+  input.addEventListener('input', () => {
+    clearBtn.classList.toggle('hidden', input.value.length === 0);
+    clearTimeout(debounceTimer);
+    const q = input.value.trim();
+    if (q.length < 3) { hideResults(); return; }
+    debounceTimer = setTimeout(() => runSearch(q), 350);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = resultBox.querySelectorAll('li[data-idx]');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      focusedIdx = Math.min(focusedIdx + 1, items.length - 1);
+      updateFocus(items);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      focusedIdx = Math.max(focusedIdx - 1, 0);
+      updateFocus(items);
+    } else if (e.key === 'Enter') {
+      if (focusedIdx >= 0 && items[focusedIdx]) items[focusedIdx].click();
+    } else if (e.key === 'Escape') {
+      clearSearch();
+    }
+  });
+
+  clearBtn.addEventListener('click', clearSearch);
+
+  document.addEventListener('click', (e) => {
+    if (!document.getElementById('search-bar').contains(e.target)) hideResults();
+  });
+
+  function updateFocus(items) {
+    items.forEach((li, i) => li.classList.toggle('focused', i === focusedIdx));
+  }
+
+  // Fetch from Nominatim — good for cities, landmarks, business names
+  async function searchNominatim(q) {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&countrycodes=us&addressdetails=1`;
+    const resp = await fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'relocation-map' } });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.map(r => ({
+      name:   r.display_name.split(',')[0].trim(),
+      detail: r.display_name.split(',').slice(1, 4).join(',').trim(),
+      lat:    parseFloat(r.lat),
+      lon:    parseFloat(r.lon),
+      bbox:   r.boundingbox,   // [s, n, w, e]
+    }));
+  }
+
+  // Fetch from US Census Geocoder — best for US residential street addresses
+  async function searchCensus(q) {
+    const url = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=Public_AR_Current&format=json`;
+    const resp = await fetch(url);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.result?.addressMatches ?? []).map(m => ({
+      name:   m.matchedAddress.split(',')[0].trim(),
+      detail: m.matchedAddress.split(',').slice(1).join(',').trim(),
+      lat:    m.coordinates.y,
+      lon:    m.coordinates.x,
+      bbox:   null,  // address-level — fly to point at street zoom
+    }));
+  }
+
+  async function runSearch(q) {
+    try {
+      // Run both sources in parallel; Census leads for addresses, Nominatim for places
+      const [censusRes, nominatimRes] = await Promise.allSettled([
+        searchCensus(q),
+        searchNominatim(q),
+      ]);
+      const census    = censusRes.status    === 'fulfilled' ? censusRes.value    : [];
+      const nominatim = nominatimRes.status === 'fulfilled' ? nominatimRes.value : [];
+      // Census results first (exact address matches), then Nominatim (places/landmarks)
+      showResults([...census, ...nominatim].slice(0, 7));
+    } catch (err) {
+      console.error('Search error:', err);
+    }
+  }
+
+  function showResults(results) {
+    focusedIdx = -1;
+    resultBox.classList.remove('hidden');
+    if (results.length === 0) {
+      resultBox.innerHTML = '<li class="search-empty">No results found</li>';
+      return;
+    }
+    resultBox.innerHTML = results.map((r, i) =>
+      `<li data-idx="${i}" data-lat="${r.lat}" data-lon="${r.lon}" data-bbox='${JSON.stringify(r.bbox)}' role="option">
+        <span class="result-name">${escapeHtml(r.name)}</span>
+        <span class="result-detail">${escapeHtml(r.detail)}</span>
+      </li>`
+    ).join('');
+
+    resultBox.querySelectorAll('li[data-idx]').forEach((li) => {
+      li.addEventListener('click', () => {
+        const bbox = JSON.parse(li.dataset.bbox);
+        const lat  = parseFloat(li.dataset.lat);
+        const lon  = parseFloat(li.dataset.lon);
+        const name = li.querySelector('.result-name').textContent;
+        placeSearchMarker(lat, lon, name);
+        if (bbox) {
+          const bounds = L.latLngBounds(
+            [parseFloat(bbox[0]), parseFloat(bbox[2])],
+            [parseFloat(bbox[1]), parseFloat(bbox[3])]
+          );
+          map.flyToBounds(bounds, { maxZoom: 16, padding: [60, 60] });
+        } else {
+          map.flyTo([lat, lon], 17);  // street-level zoom for address results
+        }
+        input.value = name;
+        clearBtn.classList.remove('hidden');
+        hideResults();
+      });
+    });
+  }
+
+  function hideResults() {
+    resultBox.classList.add('hidden');
+    resultBox.innerHTML = '';
+    focusedIdx = -1;
+  }
+
+  function clearSearch() {
+    input.value = '';
+    clearBtn.classList.add('hidden');
+    hideResults();
+    clearSearchMarker();
+    input.focus();
+  }
+}
+
+// ============================================================
+// 19. Bootstrap
 // ============================================================
 (async function bootstrap() {
   initMap();
-  initLayers();       // adds base tile layer + wires layer panel
+  initLayers();
   initLocation();
-  initDrawingHud();   // wire HUD buttons before modes reference them
+  initDrawingHud();
   initPolygon();
   initToolbar();
   initModal();
-  initNotesPanel();   // Sprint 5 — notes & review panel
+  initNotesPanel();
+  initSearch();
   initAuthUI();
   setMode('none');
-  await initAuth();   // last — pins/strokes/areas render after map is ready
+  await initAuth();
 })();
